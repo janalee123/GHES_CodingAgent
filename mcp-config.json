@@ -3,6 +3,9 @@
         "azure-devops": {
             "type": "local",
             "command": "npx",
+            "tools": [
+                "*"
+            ],
             "args": [
                 "-y",
                 "@azure-devops/mcp",
@@ -10,9 +13,9 @@
                 "--authorization",
                 "env"
             ],
-            "tools": [
-                "*"
-            ]
+            "env": {
+                "AZURE_DEVOPS_EXT_PAT": "REDACTED_ADO_PAT"
+            }
         }
     }
 }
