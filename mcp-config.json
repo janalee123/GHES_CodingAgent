@@ -12,10 +12,7 @@
                 "returngisorg",
                 "--authentication",
                 "env"
-            ],
-            "env": {
-                "AZURE_DEVOPS_EXT_PAT": "REDACTED_ADO_PAT"
-            }
+            ]
         }
     }
 }
