@@ -1,21 +1,7 @@
 # ============================================================================
 # GitHub Copilot Coder - Caller Workflow
 # ============================================================================
-# This is a lightweight caller workflow that invokes the master workflow
-# from the central GHES_CodingAgent repository.
-#
-# Benefits:
-# - No scripts folder needed in this repository
-# - Automatic updates when master workflow is improved
-# - Consistent behavior across all repositories
-#
-# Prerequisites:
-# - GH_TOKEN secret: Classic PAT with repo and workflow scopes
-# - COPILOT_TOKEN secret: Token for GitHub Copilot API access
-# - CONTEXT7_API_KEY secret (optional): API key for Context7 service
-# ============================================================================
-
-name: 🤖 GitHub Copilot Coder
+name: GitHub Copilot Coder
 
 on:
   issues:
@@ -23,12 +9,6 @@ on:
 
 jobs:
   copilot:
-    # Only run when the issue has the 'copilot' label
     if: contains(github.event.issue.labels.*.name, 'copilot')
-    
-    # Call the master workflow from the central repository
-    # Replace <org> with your GHES organization name
-    uses: ghes-test/GHES_CodingAgent/.github/workflows/copilot-coder-master.yml@main
-    
-    # Pass all secrets to the called workflow
+    uses: copilot-org/GHES_CodingAgent/.github/workflows/copilot-coder-master.yml@main
     secrets: inherit
