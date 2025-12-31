@@ -309,15 +309,16 @@ jobs:
         run: |
           echo " Pushing branch to remote..."
           
+          # GHES_HOST was set earlier via GITHUB_ENV
+          echo "Using GHES_HOST: ${GHES_HOST}"
+          
           # Configure git remote with GH_TOKEN for authentication
-          # Use GHES_HOST (set earlier in workflow) and github.repository directly
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GHES_HOST}/${{ github.repository }}.git"
           
           git push -u origin "${{ env.BRANCH_NAME }}"
           echo " Branch pushed successfully"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          GHES_HOST: ${{ env.GHES_HOST }}
       - name: ?? Create Pull Request
         id: create-pr
         run: |
@@ -407,3 +408,4 @@ jobs:
           name: copilot-logs
           path: logs/
           retention-days: 30
+
