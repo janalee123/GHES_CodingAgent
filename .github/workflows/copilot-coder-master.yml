@@ -39,7 +39,7 @@ jobs:
       pull-requests: write
     
     env:
-      MODEL: claude-sonnet-4
+      MODEL: gpt-5
       COPILOT_VERSION: 0.0.352
       # Extract hostname from server URL (removes https:// prefix)
       GHES_HOSTNAME: ${{ github.server_url }}
