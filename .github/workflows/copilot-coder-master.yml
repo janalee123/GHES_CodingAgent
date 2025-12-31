@@ -228,7 +228,7 @@ jobs:
             --allow-all-tools \
             --log-level all \
             --log-dir logs \
-            --model "${MODEL}"
+            
           
           # Clean up
           rm -f /tmp/issue_description.txt
