@@ -39,7 +39,7 @@ jobs:
       pull-requests: write
     
     env:
-      MODEL: claude-haiku-4.5
+      MODEL: gpt-4o
       COPILOT_VERSION: 0.0.352
       # Extract hostname from server URL (removes https:// prefix)
       GHES_HOSTNAME: ${{ github.server_url }}
