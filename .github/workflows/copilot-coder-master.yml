@@ -318,7 +318,7 @@ jobs:
           # Disable SSL verification for self-signed cert
           git config --global http.sslVerify false
           
-          git push -u origin "${{ env.BRANCH_NAME }}"
+          git push -u --force origin "${{ env.BRANCH_NAME }}"
           echo " Branch pushed successfully"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
