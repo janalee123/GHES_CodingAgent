@@ -10,11 +10,7 @@ name:  GitHub Copilot Coder (Master)
 #       secrets: inherit
 
 on:
-  # Direct trigger (for this repository)
-  issues:
-    types: [labeled]
-  
-  # Reusable workflow trigger (for other repositories)
+  # Reusable workflow trigger only (called from copilot-coder.yml)
   workflow_call:
     secrets:
       GH_TOKEN:
