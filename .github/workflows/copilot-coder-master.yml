@@ -305,23 +305,11 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_CREATOR: ${{ github.event.issue.user.login }}
       
-      - name: 🚀 Push Branch
+      - name:  Push Branch
         run: |
-          echo "🚀 Pushing branch to remote..."
-          
-          # Configure git remote with GH_TOKEN for authentication
-          REMOTE_URL=$(git remote get-url origin)
-          if [[ "$REMOTE_URL" == https://* ]]; then
-            REPO_PATH=$(echo "$REMOTE_URL" | sed 's|https://[^/]*/||')
-            GITHUB_HOST=$(echo "$REMOTE_URL" | sed 's|https://||' | sed 's|/.*||')
-            git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GITHUB_HOST}/${REPO_PATH}"
-          fi
-          
+          echo " Pushing branch to remote..."
           git push -u origin "${{ env.BRANCH_NAME }}"
-          echo "✅ Branch pushed successfully"
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      
+          echo " Branch pushed successfully"
       - name: 📬 Create Pull Request
         id: create-pr
         run: |
