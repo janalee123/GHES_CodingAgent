@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_TOKEN }}
-          persist-credentials: true
+          persist-credentials: false
       
       - name:  Configure GitHub CLI for GHES
         run: |
@@ -309,18 +309,20 @@ jobs:
         run: |
           echo " Pushing branch to remote..."
           
-          # Configure git remote with GH_TOKEN for authentication
-          REMOTE_URL=$(git remote get-url origin)
-          if [[ "$REMOTE_URL" == https://* ]]; then
-            REPO_PATH=$(echo "$REMOTE_URL" | sed 's|https://[^/]*/||')
-            GITHUB_HOST=$(echo "$REMOTE_URL" | sed 's|https://||' | sed 's|/.*||')
-            git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GITHUB_HOST}/${REPO_PATH}"
-          fi
+          # Set remote URL with token for push (git-credentials should handle this but being explicit)
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GHES_HOST}/${{ github.repository }}.git"
+          
+          # Debug: show what we're doing
+          echo "Remote URL set for: ${GHES_HOST}/${{ github.repository }}"
+          
+          # Disable SSL verification for self-signed cert
+          git config --global http.sslVerify false
           
           git push -u origin "${{ env.BRANCH_NAME }}"
           echo " Branch pushed successfully"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GHES_HOST: ${{ env.GHES_HOST }}
       
       - name:  Create Pull Request
         id: create-pr
