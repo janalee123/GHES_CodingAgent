@@ -32,7 +32,7 @@ jobs:
     
     # Call the master workflow from the central repository
     # Replace <org> with your GHES organization name
-    uses: ghes-test/GHES_CodingAgent/.github/workflows/copilot-reviewer-master.yml@main
+    uses: copilot-org/GHES_CodingAgent/.github/workflows/copilot-reviewer-master.yml@main
     
     # Pass all secrets to the called workflow
     secrets: inherit
