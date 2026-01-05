@@ -28,15 +28,14 @@ jobs:
     # Only run when the issue has the 'copilot' label
     if: contains(github.event.issue.labels.*.name, 'copilot')
     runs-on: self-hosted
-    
+
     permissions:
       contents: write
       issues: write
       pull-requests: write
-    
+
     env:
       MODEL: gpt-5
-      COPILOT_VERSION: 0.0.352
       # Extract hostname from server URL (removes https:// prefix)
       GHES_HOSTNAME: ${{ github.server_url }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -46,7 +45,7 @@ jobs:
       ISSUE_CREATOR: ${{ github.event.issue.user.login }}
       REPO_NAME: ${{ github.repository }}
       BRANCH_NAME: copilot/${{ github.event.issue.number }}
-    
+
     steps:
       - name:  Start Workflow
         run: |
@@ -64,24 +63,39 @@ jobs:
           ISSUE_CREATOR: ${{ github.event.issue.user.login }}
           REPO_NAME: ${{ github.repository }}
           BRANCH_NAME: copilot/${{ github.event.issue.number }}
-      
+
+      - name:  Verify Pre-installed Tools
+        run: |
+          echo " Checking pre-installed tools on runner..."
+          echo ""
+          echo " Node.js:"
+          node --version
+          echo ""
+          echo " Copilot CLI:"
+          copilot --version
+          echo ""
+          echo " Python:"
+          python3 --version
+          echo ""
+          echo " All tools verified!"
+
       - name:  Configure Git Credentials for GHES
         run: |
           # Extract hostname from server URL (remove https:// prefix)
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           echo "GHES_HOST=${GHES_HOST}" >> $GITHUB_ENV
-          
+
           git config --global credential.helper store
           echo "https://x-access-token:${{ secrets.GH_TOKEN }}@${GHES_HOST}" >> ~/.git-credentials
           chmod 600 ~/.git-credentials
           echo " Git credentials configured for GHES (${GHES_HOST})"
-      
+
       - name:  Checkout Repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_TOKEN }}
           persist-credentials: false
-      
+
       - name:  Configure GitHub CLI for GHES
         run: |
           # Configure gh to use GHES instance (GHES_HOST set in previous step)
@@ -90,89 +104,45 @@ jobs:
           echo " GitHub CLI configured for GHES (${GHES_HOST})"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      
+
       - name:  Update Issue Labels - In Progress
         run: |
           gh issue edit ${{ env.ISSUE_NUMBER }} \
             --add-label "in-progress" \
             --remove-label "copilot"
-          
+
           # Add comment to notify that Copilot is working on this issue
           COMMENT="##  Copilot is on it!
-          
+
           Copilot has been assigned to work on this issue. You can view progress under [GitHub Actions](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), and once completed a PR will be linked here."
-          
+
           gh issue comment "${{ env.ISSUE_NUMBER }}" --body "${COMMENT}"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      
-      - name:  Setup Python (Latest)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      
-      - name:  Install uv/uvx
-        run: |
-          echo "Installing uvx (pipx runner)..."
-          pip install --upgrade pip
-          pip install uv
-          echo " Python and uv installed"
-          python --version
-          uv --version
-      
-      - name:  Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-      
-      - name:  Detect NPM Global Path
-        id: npm-path
-        run: |
-          NPM_PREFIX=$(npm config get prefix)
-          echo "NPM_GLOBAL_PATH=${NPM_PREFIX}/lib/node_modules" >> $GITHUB_ENV
-          echo "NPM global path: ${NPM_PREFIX}/lib/node_modules"
-      
-      - name:  Cache Global NPM Packages
-        uses: actions/cache@v3
-        with:
-          key: npm-global-${{ runner.os }}-copilot-${{ env.COPILOT_VERSION }}
-          path: ${{ env.NPM_GLOBAL_PATH }}
-          restore-keys: |
-            npm-global-${{ runner.os }}-copilot-
-      
-      - name:  Install Copilot CLI
-        run: |
-          if ! command -v copilot &> /dev/null; then
-            echo "Installing @github/copilot@${{ env.COPILOT_VERSION }}..."
-            npm install -g @github/copilot@${{ env.COPILOT_VERSION }}
-          else
-            echo " @github/copilot already installed (from cache)"
-            copilot --version
-          fi
-      
+
       - name:  Configure MCP Servers
         run: |
           mkdir -p ~/.config
-          
+
           # Fetch mcp-config.json from the central GHES_CodingAgent repository
           echo " Fetching MCP configuration from GHES_CodingAgent..."
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           OWNER="${{ github.repository_owner }}"
-          
+
           # Determine API base URL
           if [[ "$GHES_HOST" == "github.com" ]]; then
               API_BASE="https://api.github.com"
           else
               API_BASE="https://$GHES_HOST/api/v3"
           fi
-          
+
           # Download mcp-config.json from GHES_CodingAgent repo
           curl -s \
               -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
               -H "Accept: application/vnd.github.v3.raw" \
               "$API_BASE/repos/$OWNER/GHES_CodingAgent/contents/mcp-config.json" \
               > ~/.config/mcp-config.json
-          
+
           if [ -s ~/.config/mcp-config.json ]; then
               echo " MCP configuration downloaded to ~/.config/mcp-config.json"
               cat ~/.config/mcp-config.json
@@ -180,7 +150,7 @@ jobs:
               echo " Failed to download MCP configuration"
               exit 1
           fi
-      
+
       - name:  Check MCP Access
         run: |
           echo " Verifying MCP server access..."
@@ -188,15 +158,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-      
+
       - name:  Create Feature Branch
         run: |
           echo " Creating feature branch..."
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "copilot-agent[bot]"
+          git config user.email "copilot-agent[bot]@users.noreply.github.com"
           git checkout -b ${{ env.BRANCH_NAME }}
           echo " Branch ${{ env.BRANCH_NAME }} created"
-      
+
       - name:  Implement Changes with Copilot
         timeout-minutes: 30
         working-directory: ${{ github.workspace }}
@@ -205,17 +175,17 @@ jobs:
           echo ""
           echo " Issue: #${ISSUE_NUMBER}"
           echo " Title: ${ISSUE_TITLE}"
-          echo "  Working Directory: $(pwd)"
+          echo " Working Directory: $(pwd)"
           echo ""
-          
+
           echo "This is the description that Copilot CLI is going to use to implement the task:"
           echo "${ISSUE_BODY}"
-          
+
           mkdir -p logs
-          
+
           # Save issue body to file to avoid injection
           printf '%s' "${ISSUE_BODY}" > /tmp/issue_description.txt
-          
+
           # Run Copilot with file input
           # Note: -p flag runs in non-interactive mode
           # --add-dir allows Copilot to access files in the workspace directory
@@ -223,12 +193,12 @@ jobs:
             --add-dir "$(pwd)" \
             --allow-all-tools \
             --log-level all \
-            --log-dir logs \
-            
-          
+            --log-dir logs
+
+
           # Clean up
           rm -f /tmp/issue_description.txt
-          
+
           echo " Implementation completed"
         env:
           GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
@@ -237,33 +207,33 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           MODEL: ${{ env.MODEL }}
-      
+
       - name:  Commit Changes
         run: |
           echo " Preparing commit..."
-          
+
           # Co-author info from issue creator
           CREATOR_NAME="${ISSUE_CREATOR}"
           CREATOR_EMAIL="${ISSUE_CREATOR}@users.noreply.github.com"
           echo " Co-author: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
-          
+
           # Add all files except metadata files
           git add .
-          
+
           # Exclude metadata files from commit
           for file in copilot-summary.md commit-message.md .final-commit-msg.txt .github/copilot-instructions.md; do
             if git ls-files --cached "$file" > /dev/null 2>&1; then
               git reset HEAD "$file" 2>/dev/null || true
             fi
           done
-          
+
           # Check if there are any staged changes
           if ! git diff --cached --quiet; then
             echo " Changes staged for commit"
           else
-            echo "  No changes staged for commit"
+            echo " No changes staged for commit"
           fi
-          
+
           # Prepare final commit message with co-author
           if [ -f "commit-message.md" ]; then
             echo " Using Copilot-generated commit message"
@@ -274,9 +244,9 @@ jobs:
               echo "Co-authored-by: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
             } > .final-commit-msg.txt
           else
-            echo "  commit-message.md not found, using default message"
+            echo " commit-message.md not found, using default message"
             {
-              echo "feat: Implement issue ${ISSUE_NUMBER}"
+              echo " [AI-Generated] feat: Implement issue ${ISSUE_NUMBER}"
               echo ""
               echo "${ISSUE_TITLE}"
               echo ""
@@ -285,41 +255,41 @@ jobs:
               echo "Co-authored-by: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
             } > .final-commit-msg.txt
           fi
-          
+
           # Create commit if there are staged changes
           if git diff --cached --quiet; then
-            echo "  No staged changes to commit, skipping git commit"
+            echo " No staged changes to commit, skipping git commit"
           else
             git commit -F .final-commit-msg.txt
             echo " Changes committed successfully"
           fi
-          
+
           # Clean up
           rm -f .final-commit-msg.txt
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_CREATOR: ${{ github.event.issue.user.login }}
-      
+
       - name:  Push Branch
         run: |
           echo " Pushing branch to remote..."
-          
+
           # Set remote URL with token for push (git-credentials should handle this but being explicit)
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GHES_HOST}/${{ github.repository }}.git"
-          
+
           # Debug: show what we're doing
           echo "Remote URL set for: ${GHES_HOST}/${{ github.repository }}"
-          
+
           # Disable SSL verification for self-signed cert
           git config --global http.sslVerify false
-          
+
           git push -u --force origin "${{ env.BRANCH_NAME }}"
           echo " Branch pushed successfully"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GHES_HOST: ${{ env.GHES_HOST }}
-      
+
       - name:  Create Pull Request
         id: create-pr
         run: |
@@ -328,30 +298,33 @@ jobs:
             PR_BODY=$(cat copilot-summary.md)
           else
             PR_BODY="##  Automated Implementation
-          
+
           This PR was automatically generated by GitHub Copilot CLI.
-          
+
           ###  Related Issue
           Closes #${ISSUE_NUMBER}
-          
+
           ###  Changes
-          Please review the changes made by Copilot CLI."
+          Please review the changes made by Copilot CLI.
+
+          ---
+           *This PR was automatically generated by GitHub Copilot Agent*"
           fi
-          
+
           # Save PR body to file to avoid injection
           printf '%s' "${PR_BODY}" > /tmp/pr_body.txt
-          
+
           # Create PR and capture URL - use file for body
           PR_URL=$(gh pr create \
-            --title "${ISSUE_TITLE}" \
+            --title " ${ISSUE_TITLE}" \
             --body-file /tmp/pr_body.txt \
             --base main \
             --head "${BRANCH_NAME}" \
             --assignee "${ISSUE_CREATOR}")
-          
+
           # Clean up
           rm -f /tmp/pr_body.txt
-          
+
           echo "PR_URL=${PR_URL}" >> $GITHUB_ENV
           echo " Pull Request created: ${PR_URL}"
         env:
@@ -360,11 +333,11 @@ jobs:
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_CREATOR: ${{ github.event.issue.user.login }}
           BRANCH_NAME: ${{ env.BRANCH_NAME }}
-      
+
       - name:  Add Completion Comment to Issue
         run: |
           echo " Adding completion comment to issue #${ISSUE_NUMBER}..."
-          
+
           COMMENT="##  Implementation Complete!
 
           The GitHub Copilot CLI has successfully implemented the changes for this issue.
@@ -382,15 +355,15 @@ jobs:
           Workflow logs and Copilot execution logs are available in the workflow run artifacts.
 
           ---
-          *This comment was automatically generated by the GitHub Copilot Coder workflow.*"
-          
+           *This comment was automatically generated by the GitHub Copilot Coder workflow.*"
+
           gh issue comment "${ISSUE_NUMBER}" --body "${COMMENT}"
           echo " Comment added successfully"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           PR_URL: ${{ env.PR_URL }}
-      
+
       - name:  Update Issue Labels - Completed
         run: |
           gh issue edit ${{ env.ISSUE_NUMBER }} \
@@ -398,7 +371,7 @@ jobs:
             --remove-label "in-progress"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      
+
       - name:  Publish Logs
         uses: actions/upload-artifact@v3
         if: always()
