@@ -23,7 +23,6 @@ permissions:
 
 env:
   ANALYSIS_DIR: ${{ github.workspace }}/pr-analysis
-  DIFF_FILE: ${{ github.workspace }}/pr-diff.json
 
 jobs:
   review:
@@ -35,7 +34,6 @@ jobs:
       - name:  Start Review
         run: |
           echo " Copilot PR Reviewer started!"
-          echo ""
           echo " PR #${{ github.event.pull_request.number }}"
           echo " Branch: ${{ github.event.pull_request.head.ref }}  ${{ github.event.pull_request.base.ref }}"
           echo " Author: ${{ github.event.pull_request.user.login }}"
@@ -49,7 +47,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name:  Get PR Differences
+      - name:  Get Changed Files
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
@@ -66,14 +64,12 @@ jobs:
               API_BASE="https://$GHES_HOST/api/v3"
           fi
 
-          FILES_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files"
-          
           curl -s -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              "$FILES_URL?per_page=100" | jq -r '.[].filename' > /tmp/pr_files.txt
+              "$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
+              | jq -r '.[].filename' > /tmp/pr_files.txt
           
-          FILE_COUNT=$(wc -l < /tmp/pr_files.txt | tr -d ' ')
-          echo " Found $FILE_COUNT changed files"
+          echo " Found $(wc -l < /tmp/pr_files.txt | tr -d ' ') changed files:"
           cat /tmp/pr_files.txt
 
       - name:  Download Modified Files
@@ -85,8 +81,8 @@ jobs:
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
           OUTPUT_DIR="${{ env.ANALYSIS_DIR }}/source"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           if [[ "$GHES_HOST" == "github.com" ]]; then
               API_BASE="https://api.github.com"
@@ -95,8 +91,6 @@ jobs:
           fi
 
           mkdir -p "$OUTPUT_DIR"
-          
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           while IFS= read -r filepath; do
               if [ -n "$filepath" ]; then
@@ -124,6 +118,7 @@ jobs:
           mkdir -p "$OUTPUT_DIR"
           cd "$PR_DIRECTORY"
           
+          # Get list of files
           FILES=$(find . -type f ! -path "*/pr-comments/*" ! -name ".*" | sed 's|^\./||' | head -20)
           
           if [ -z "$FILES" ]; then
@@ -134,81 +129,15 @@ jobs:
           echo " Files to analyze:"
           echo "$FILES"
           
+          # Build files list for prompt
           FILES_LIST=""
           for f in $FILES; do
-              FILES_LIST="${FILES_LIST}- \`$f\`"
-
-          copilot -p "$PROMPT" --allow-all-tools 2>&1 || true
-          
-          ANALYSIS_COUNT=$(find "$OUTPUT_DIR" -name "*_analysis.md" 2>/dev/null | wc -l)
-          echo " Generated $ANALYSIS_COUNT analysis files"
-
-      - name:  Post Review Comment
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        if: always()
-        run: |
-          echo " Posting review comments..."
-          
-          GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
-          OWNER="${{ github.repository_owner }}"
-          REPO="${{ github.event.repository.name }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          COMMENTS_DIR="${{ env.ANALYSIS_DIR }}/source/pr-comments"
-          
-          if [[ "$GHES_HOST" == "github.com" ]]; then
-              API_BASE="https://api.github.com"
-          else
-              API_BASE="https://$GHES_HOST/api/v3"
-          fi
-
-          if [ ! -d "$COMMENTS_DIR" ]; then
-              echo " No comments to post"
-              exit 0
-          fi
-
-          for file in "$COMMENTS_DIR"/*_analysis.md; do
-              [ -f "$file" ] || continue
-              echo " Posting: $(basename $file)"
-              
-              CONTENT=$(cat "$file" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-              
-              curl -s -X POST \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"body\": \"$CONTENT\", \"event\": \"COMMENT\"}" \
-                  "$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" > /dev/null
-              
-              echo "   Posted"
-              sleep 1
-          done
-          
-          echo " All comments posted"
-
-      - name:  Summary
-        if: always()
-        run: |
-          echo "##  PR Review Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **PR:** #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Author:** ${{ github.event.pull_request.user.login }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -d "${{ env.ANALYSIS_DIR }}/source/pr-comments" ]; then
-            COUNT=$(find "${{ env.ANALYSIS_DIR }}/source/pr-comments" -name "*_analysis.md" 2>/dev/null | wc -l)
-            echo "- **Analysis files:** $COUNT" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Status:**  No issues found" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo " *Generated by Copilot PR Reviewer*" >> $GITHUB_STEP_SUMMARY
-\n'
+              FILES_LIST="${FILES_LIST}- \`$f\`
+          "
           done
 
-          PROMPT="Analyze ALL the files in this Pull Request directory and generate a SEPARATE markdown file for EACH file analyzed.
+          # Create detailed analysis prompt
+          ANALYSIS_PROMPT="Analyze ALL the files in this Pull Request directory and generate a SEPARATE markdown file for EACH file analyzed.
 
            **Files to analyze:**
           $FILES_LIST
@@ -218,27 +147,28 @@ jobs:
           For EACH file listed above, you must:
           1. Analyze the file thoroughly
           2. Create a separate markdown file with the analysis if there is anything noteworthy (issues, recommendations)
-          3. Name each file following this pattern: replace \`/\` with \`_\` in the original path and add \`_analysis.md\` suffix
-          4. Save each file in the directory: \`$OUTPUT_DIR/\`
+          3. Name each file following this pattern: replace / with _ in the original path and add _analysis.md suffix
+          4. Save each file in the directory: $OUTPUT_DIR/
 
-          📝 **Format for EACH analysis file:**
+           **Format for EACH analysis file:**
 
-          # 🔬 \$relative_path analysis
+          #  filename analysis
 
-          ## 📊 Overview
+          ##  Overview
           Brief description of what this file does.
 
-          ## ⚠️ Issues and Recommendations
+          ##  Issues and Recommendations
           List issues with type, description, code snippet, and recommendation.
 
-          ## ✅ Summary
-          - **Overall Status:** ⚠️ Needs Attention / 🔴 Critical Issues / ✅ Good
+          ##  Summary
+          - **Overall Status:**  Needs Attention /  Critical Issues /  Good
           - **Priority:** High/Medium/Low
           - **Action Required:** Yes/No
 
           Focus only on this single file. Be thorough but concise."
 
-          copilot -p "$PROMPT" --allow-all-tools 2>&1 || true
+          # Execute copilot
+          copilot -p "$ANALYSIS_PROMPT" --allow-all-tools 2>&1 || true
           
           ANALYSIS_COUNT=$(find "$OUTPUT_DIR" -name "*_analysis.md" 2>/dev/null | wc -l)
           echo " Generated $ANALYSIS_COUNT analysis files"
@@ -263,13 +193,13 @@ jobs:
           fi
 
           if [ ! -d "$COMMENTS_DIR" ]; then
-              echo " No comments to post"
+              echo " No comments directory found"
               exit 0
           fi
 
+          shopt -s nullglob
           for file in "$COMMENTS_DIR"/*_analysis.md; do
-              [ -f "$file" ] || continue
-              echo " Posting: $(basename $file)"
+              echo " Posting: $(basename "$file")"
               
               CONTENT=$(cat "$file" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
               
@@ -295,8 +225,9 @@ jobs:
           echo "- **Author:** ${{ github.event.pull_request.user.login }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ -d "${{ env.ANALYSIS_DIR }}/source/pr-comments" ]; then
-            COUNT=$(find "${{ env.ANALYSIS_DIR }}/source/pr-comments" -name "*_analysis.md" 2>/dev/null | wc -l)
+          COMMENTS_DIR="${{ env.ANALYSIS_DIR }}/source/pr-comments"
+          if [ -d "$COMMENTS_DIR" ]; then
+            COUNT=$(find "$COMMENTS_DIR" -name "*_analysis.md" 2>/dev/null | wc -l)
             echo "- **Analysis files:** $COUNT" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Status:**  No issues found" >> $GITHUB_STEP_SUMMARY
@@ -305,4 +236,3 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo " *Generated by Copilot PR Reviewer*" >> $GITHUB_STEP_SUMMARY
-
