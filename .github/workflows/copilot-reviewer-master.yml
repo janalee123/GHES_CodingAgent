@@ -1,24 +1,9 @@
-name: 🤖 Copilot PR Reviewer (Master)
+name:  Copilot PR Reviewer (Master)
 
-# This is a reusable workflow that can be called from other repositories.
-# It contains the full implementation logic for the Copilot PR Reviewer.
-#
-# To use this workflow from another repository, create a caller workflow:
-#   jobs:
-#     review:
-#       uses: <org>/GHES_CodingAgent/.github/workflows/copilot-reviewer-master.yml@main
-#       secrets: inherit
+# Reusable workflow for PR code review using GitHub Copilot CLI
+# Pre-requisites: Node.js and Copilot CLI pre-installed on runner
 
 on:
-  # Direct trigger (for this repository) - only on 'copilot' label
-  pull_request:
-    types: [labeled]
-    branches:
-      - main
-      - develop
-      - feature/*
-  
-  # Reusable workflow trigger (for other repositories)
   workflow_call:
     secrets:
       GH_TOKEN:
@@ -27,9 +12,6 @@ on:
       COPILOT_TOKEN:
         description: 'Token for GitHub Copilot API access'
         required: true
-      CONTEXT7_API_KEY:
-        description: 'API key for Context7 documentation service'
-        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -40,344 +22,139 @@ permissions:
   pull-requests: write
 
 env:
-  MODEL: claude-haiku-4.5
-  COPILOT_VERSION: latest
   ANALYSIS_DIR: ${{ github.workspace }}/pr-analysis
   DIFF_FILE: ${{ github.workspace }}/pr-diff.json
 
 jobs:
   review:
     runs-on: self-hosted
-    name: 🤖 Analyze PR and Generate Review
-    # Only run when the 'copilot' label is added
+    name:  Analyze PR and Generate Review
     if: github.event.label.name == 'copilot'
-    
-    steps:
-      - name: 📋 Show PR Information
-        run: |
-          echo "📋 Pull Request Information:"
-          echo "  - Repository: ${{ github.repository }}"
-          echo "  - PR #: ${{ github.event.pull_request.number }}"
-          echo "  - Source Branch: ${{ github.event.pull_request.head.ref }}"
-          echo "  - Target Branch: ${{ github.event.pull_request.base.ref }}"
-          echo "  - Source Commit: ${{ github.event.pull_request.head.sha }}"
-          echo ""
-          echo "📁 Working directories:"
-          echo "  - Analysis Dir: ${{ env.ANALYSIS_DIR }}"
-          echo "  - Diff File: ${{ env.DIFF_FILE }}"
 
-      - name: 📂 Checkout Repository
+    steps:
+      - name:  Start Review
+        run: |
+          echo " Copilot PR Reviewer started!"
+          echo ""
+          echo " PR #${{ github.event.pull_request.number }}"
+          echo " Branch: ${{ github.event.pull_request.head.ref }}  ${{ github.event.pull_request.base.ref }}"
+          echo " Author: ${{ github.event.pull_request.user.login }}"
+          echo ""
+          echo " Verifying pre-installed tools..."
+          node --version
+          copilot --version
+
+      - name:  Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: ⚙️ Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-
-      - name: 🔍 Detect NPM Global Path
-        run: |
-          NPM_PREFIX=$(npm config get prefix)
-          echo "NPM_GLOBAL_PATH=${NPM_PREFIX}/lib/node_modules" >> $GITHUB_ENV
-          echo "NPM global path: ${NPM_PREFIX}/lib/node_modules"
-
-      - name: 📦 Cache Global NPM Packages
-        uses: actions/cache@v3
-        with:
-          key: npm-global-${{ runner.os }}-copilot-${{ env.COPILOT_VERSION }}
-          path: ${{ env.NPM_GLOBAL_PATH }}
-          restore-keys: |
-            npm-global-${{ runner.os }}-copilot-
-
-      - name: 📦 Install Copilot CLI
-        run: |
-          if ! command -v copilot &> /dev/null; then
-            echo "Installing @github/copilot@${{ env.COPILOT_VERSION }}..."
-            npm install -g @github/copilot@${{ env.COPILOT_VERSION }}
-          else
-            echo "✅ @github/copilot already installed (from cache)"
-            copilot --version
-          fi
-
-      - name: 🔍 Get PR Differences
+      - name:  Get PR Differences
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          echo "🌐 Get PR Differences using GitHub API"
-          echo "======================================="
+          echo " Fetching PR changes..."
           
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          OUTPUT_FILE="${{ env.DIFF_FILE }}"
           
-          echo "📋 PR Information:"
-          echo "  - GHES Host: $GHES_HOST"
-          echo "  - Owner: $OWNER"
-          echo "  - Repository: $REPO"
-          echo "  - PR Number: $PR_NUMBER"
-          echo ""
-          
-          # Determine API base URL
           if [[ "$GHES_HOST" == "github.com" ]]; then
               API_BASE="https://api.github.com"
           else
               API_BASE="https://$GHES_HOST/api/v3"
           fi
-          
-          echo "🔗 API Base URL: $API_BASE"
-          
-          # Get PR details
-          echo "🔍 Fetching PR details..."
-          PR_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER"
-          
-          PR_RESPONSE=$(curl -s \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "$PR_URL")
-          
-          BASE_REF=$(echo "$PR_RESPONSE" | grep -o '"base":{"label":"[^"]*"' | cut -d'"' -f8 | cut -d: -f2- || echo "unknown")
-          HEAD_REF=$(echo "$PR_RESPONSE" | grep -o '"head":{"label":"[^"]*"' | cut -d'"' -f8 | cut -d: -f2- || echo "unknown")
-          
-          echo "  - Base Branch: $BASE_REF"
-          echo "  - Head Branch: $HEAD_REF"
-          
-          # Get changed files
-          echo "📄 Fetching changed files..."
+
           FILES_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files"
           
-          CHANGES_ARRAY=""
-          FIRST=true
-          FILE_COUNT=0
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "$FILES_URL?per_page=100" | jq -r '.[].filename' > /tmp/pr_files.txt
           
-          for PAGE in 1 2 3; do
-              FILES_RESPONSE=$(curl -s \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$FILES_URL?page=$PAGE&per_page=100")
-              
-              if echo "$FILES_RESPONSE" | grep -q "^\\[\\]"; then
-                  break
-              fi
-              
-              FILENAMES=$(echo "$FILES_RESPONSE" | grep -o '"filename":"[^"]*"' | cut -d'"' -f4)
-              
-              while IFS= read -r filename; do
-                  if [ -n "$filename" ]; then
-                      if [ "$FIRST" = false ]; then
-                          CHANGES_ARRAY="$CHANGES_ARRAY,"
-                      fi
-                      CHANGES_ARRAY="$CHANGES_ARRAY
-              { \"path\": \"$filename\", \"type\": \"modify\" }"
-                      FIRST=false
-                      FILE_COUNT=$((FILE_COUNT + 1))
-                      echo "   - $filename"
-                  fi
-              done <<< "$FILENAMES"
-          done
-          
-          echo "✅ Found $FILE_COUNT changed files"
-          
-          # Create output JSON
-          cat > "$OUTPUT_FILE" << EOF
-          {
-            "pr_number": $PR_NUMBER,
-            "base_ref": "$BASE_REF",
-            "head_ref": "$HEAD_REF",
-            "changes": [$CHANGES_ARRAY
-            ],
-            "statistics": { "total_changes": $FILE_COUNT }
-          }
-          EOF
-          
-          echo "✅ Diff file created: $OUTPUT_FILE"
+          FILE_COUNT=$(wc -l < /tmp/pr_files.txt | tr -d ' ')
+          echo " Found $FILE_COUNT changed files"
+          cat /tmp/pr_files.txt
 
-      - name: 📁 Download Modified Files
+      - name:  Download Modified Files
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          echo "📁 Downloading Modified PR Files"
-          echo "================================="
+          echo " Downloading modified files..."
           
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          OUTPUT_DIR="${{ env.ANALYSIS_DIR }}"
+          OUTPUT_DIR="${{ env.ANALYSIS_DIR }}/source"
           
-          # Determine API base URL
           if [[ "$GHES_HOST" == "github.com" ]]; then
               API_BASE="https://api.github.com"
           else
               API_BASE="https://$GHES_HOST/api/v3"
           fi
+
+          mkdir -p "$OUTPUT_DIR"
           
-          # Create output directories
-          mkdir -p "$OUTPUT_DIR/source"
-          mkdir -p "$OUTPUT_DIR/target"
-          mkdir -p "$OUTPUT_DIR/metadata"
-          
-          # Get files from the PR
-          echo "📄 Fetching changed files from PR..."
-          FILES_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/files"
-          
-          PAGE=1
-          while [ $PAGE -le 10 ]; do
-              RESPONSE=$(curl -s \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  "$FILES_URL?page=$PAGE&per_page=100")
-              
-              if echo "$RESPONSE" | grep -q "^\\[\\]"; then
-                  break
-              fi
-              
-              echo "$RESPONSE" | jq -r '.[] | .filename' 2>/dev/null >> "/tmp/pr_files_$$.txt" || true
-              PAGE=$((PAGE + 1))
-          done
-          
-          if [ ! -f "/tmp/pr_files_$$.txt" ]; then
-              echo "⚠️  No modified files found in PR"
-              exit 0
-          fi
-          
-          TOTAL_FILES=$(wc -l < "/tmp/pr_files_$$.txt" | tr -d ' ')
-          echo "✅ Found $TOTAL_FILES files to download"
-          
-          # Get PR details for SHA references
-          PR_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER"
-          PR_DATA=$(curl -s \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "$PR_URL")
-          
-          HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha // empty')
-          BASE_SHA=$(echo "$PR_DATA" | jq -r '.base.sha // empty')
-          
-          SUCCESSFUL=0
-          FAILED=0
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           
           while IFS= read -r filepath; do
               if [ -n "$filepath" ]; then
-                  echo "📥 Downloading: $filepath"
-                  
-                  # Create directory structure
-                  mkdir -p "$OUTPUT_DIR/source/$(dirname "$filepath")"
-                  
-                  # Download from source (head) branch
-                  CONTENT_URL="$API_BASE/repos/$OWNER/$REPO/contents/$filepath?ref=$HEAD_SHA"
-                  curl -s \
-                      -H "Authorization: Bearer $GH_TOKEN" \
+                  mkdir -p "$OUTPUT_DIR/$(dirname "$filepath")"
+                  curl -s -H "Authorization: Bearer $GH_TOKEN" \
                       -H "Accept: application/vnd.github.v3.raw" \
-                      "$CONTENT_URL" > "$OUTPUT_DIR/source/$filepath" 2>/dev/null
-                  
-                  if [ -s "$OUTPUT_DIR/source/$filepath" ]; then
-                      echo "  ✅ Downloaded"
-                      SUCCESSFUL=$((SUCCESSFUL + 1))
-                  else
-                      echo "  ⚠️  Could not download"
-                      FAILED=$((FAILED + 1))
-                  fi
+                      "$API_BASE/repos/$OWNER/$REPO/contents/$filepath?ref=$HEAD_SHA" \
+                      > "$OUTPUT_DIR/$filepath" 2>/dev/null
+                  echo "   $filepath"
               fi
-          done < "/tmp/pr_files_$$.txt"
+          done < /tmp/pr_files.txt
           
-          rm -f "/tmp/pr_files_$$.txt"
-          
-          echo ""
-          echo "📊 Download Summary:"
-          echo "  - Total files: $TOTAL_FILES"
-          echo "  - Successful: $SUCCESSFUL"
-          echo "  - Failed: $FAILED"
+          rm -f /tmp/pr_files.txt
+          echo " Download complete"
 
-      - name: 🤖 Analyze with GitHub Copilot CLI
+      - name:  Analyze with Copilot CLI
         env:
-          MODEL: ${{ env.MODEL }}
           GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
         run: |
-          echo "🤖 PR Analysis with GitHub Copilot CLI"
-          echo "======================================="
+          echo " Running Copilot analysis..."
           
           PR_DIRECTORY="${{ env.ANALYSIS_DIR }}/source"
-          OUTPUT_COMMENTS_DIR="${{ env.ANALYSIS_DIR }}/source/pr-comments"
+          OUTPUT_DIR="${{ env.ANALYSIS_DIR }}/source/pr-comments"
           
-          if [ ! -d "$PR_DIRECTORY" ]; then
-              echo "❌ ERROR: Directory $PR_DIRECTORY does not exist"
-              exit 1
-          fi
-          
-          mkdir -p "$OUTPUT_COMMENTS_DIR"
-          
-          # Get list of files to analyze
-          echo "🔍 Scanning files in directory..."
+          mkdir -p "$OUTPUT_DIR"
           cd "$PR_DIRECTORY"
-          FILES=($(find . -type f ! -path "*/pr-comments/*" ! -name "pr-comment*.md" ! -name ".*" | sed 's|^\./||'))
           
-          if [ ${#FILES[@]} -eq 0 ]; then
-              echo "⚠️  No files found to analyze"
+          FILES=$(find . -type f ! -path "*/pr-comments/*" ! -name ".*" | sed 's|^\./||' | head -20)
+          
+          if [ -z "$FILES" ]; then
+              echo " No files to analyze"
               exit 0
           fi
           
-          echo "✅ Found ${#FILES[@]} files to analyze:"
-          for file in "${FILES[@]}"; do
-              echo "   - $file"
-          done
+          echo " Files to analyze:"
+          echo "$FILES"
           
-          # Build the list of files for the prompt
-          FILES_LIST=""
-          for file in "${FILES[@]}"; do
-              FILES_LIST="${FILES_LIST}- \`$file\`"$'\n'
-          done
+          PROMPT="Analyze the code files in this PR directory and create a markdown analysis file for each.
           
-          # Create the analysis prompt
-          ANALYSIS_PROMPT="Analyze ALL the files in this Pull Request directory and generate a SEPARATE markdown file for EACH file analyzed.
-
-          📁 **Files to analyze:**
-          $FILES_LIST
-
-          🎯 **IMPORTANT INSTRUCTIONS:**
-
-          For EACH file listed above, you must:
-          1. Analyze the file thoroughly
-          2. Create a separate markdown file with the analysis if there is anything noteworthy (issues, recommendations)
-          3. Name each file following this pattern: replace \`/\` with \`_\` in the original path and add \`_analysis.md\` suffix
-          4. Save each file in the directory: \`$OUTPUT_COMMENTS_DIR/\`
-
-          📝 **Format for EACH analysis file:**
-
-          # 🔬 \$relative_path analysis
-
-          ## 📊 Overview
-          Brief description of what this file does.
-
-          ## ⚠️ Issues and Recommendations
-          List issues with type, description, code snippet, and recommendation.
-
-          ## ✅ Summary
-          - **Overall Status:** ⚠️ Needs Attention / 🔴 Critical Issues / ✅ Good
-          - **Priority:** High/Medium/Low
-          - **Action Required:** Yes/No
-
-          Focus only on this single file. Be thorough but concise."
-
-          # Execute copilot for analysis
-          echo "🤖 Generating analysis with Copilot..."
-          copilot -p "$ANALYSIS_PROMPT" --allow-all-tools --model "$MODEL" 2>&1 || true
+          For each file, save analysis to: $OUTPUT_DIR/{filename}_analysis.md
           
-          echo "✅ Copilot analysis completed"
-          
-          # Summary
-          ANALYSIS_COUNT=$(ls -1 "$OUTPUT_COMMENTS_DIR"/*_analysis.md 2>/dev/null | wc -l || echo "0")
-          echo "📊 Analysis files generated: $ANALYSIS_COUNT"
+          Format:
+          #  {filename} Analysis
+          ## Overview
+          ##  Issues & Recommendations  
+          ##  Summary (Good/Needs Attention/Critical)"
 
-      - name: 💬 Publish Comment on PR
+          copilot -p "$PROMPT" --allow-all-tools 2>&1 || true
+          
+          ANALYSIS_COUNT=$(find "$OUTPUT_DIR" -name "*_analysis.md" 2>/dev/null | wc -l)
+          echo " Generated $ANALYSIS_COUNT analysis files"
+
+      - name:  Post Review Comment
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         if: always()
         run: |
-          echo "💬 Posting PR Review Comments"
-          echo "=============================="
+          echo " Posting review comments..."
           
           GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
           OWNER="${{ github.repository_owner }}"
@@ -385,116 +162,52 @@ jobs:
           PR_NUMBER="${{ github.event.pull_request.number }}"
           COMMENTS_DIR="${{ env.ANALYSIS_DIR }}/source/pr-comments"
           
-          # Determine API base URL
           if [[ "$GHES_HOST" == "github.com" ]]; then
               API_BASE="https://api.github.com"
           else
               API_BASE="https://$GHES_HOST/api/v3"
           fi
-          
-          # Verify comments directory exists
+
           if [ ! -d "$COMMENTS_DIR" ]; then
-              echo "⚠️  No comments directory found"
+              echo " No comments to post"
               exit 0
           fi
-          
-          # Get list of markdown files
-          COMMENT_FILES=($(find "$COMMENTS_DIR" -type f -name "*_analysis.md" 2>/dev/null | sort))
-          
-          if [ ${#COMMENT_FILES[@]} -eq 0 ]; then
-              echo "⚠️  No analysis files found (this is normal if no issues were found)"
-              exit 0
-          fi
-          
-          echo "📄 Found ${#COMMENT_FILES[@]} comment files to post"
-          
-          SUCCESSFUL=0
-          FAILED=0
-          
-          for comment_file in "${COMMENT_FILES[@]}"; do
-              filename=$(basename "$comment_file")
-              echo "📤 Posting: $filename"
+
+          for file in "$COMMENTS_DIR"/*_analysis.md; do
+              [ -f "$file" ] || continue
+              echo " Posting: $(basename $file)"
               
-              # Read and escape content
-              COMMENT_CONTENT=$(cat "$comment_file")
-              ESCAPED_CONTENT=$(printf '%s' "$COMMENT_CONTENT" | \
-                  sed 's/\\/\\\\/g' | \
-                  sed 's/"/\\"/g' | \
-                  sed ':a;N;$!ba;s/\n/\\n/g')
+              CONTENT=$(cat "$file" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
               
-              # Create payload
-              PAYLOAD="{\"body\": \"$ESCAPED_CONTENT\", \"event\": \"COMMENT\"}"
-              
-              # Post as a pull request review
-              REVIEW_URL="$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews"
-              
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                  -X POST \
+              curl -s -X POST \
                   -H "Authorization: Bearer $GH_TOKEN" \
                   -H "Accept: application/vnd.github.v3+json" \
                   -H "Content-Type: application/json" \
-                  -d "$PAYLOAD" \
-                  "$REVIEW_URL")
+                  -d "{\"body\": \"$CONTENT\", \"event\": \"COMMENT\"}" \
+                  "$API_BASE/repos/$OWNER/$REPO/pulls/$PR_NUMBER/reviews" > /dev/null
               
-              if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-                  echo "  ✅ Posted successfully"
-                  SUCCESSFUL=$((SUCCESSFUL + 1))
-              else
-                  echo "  ❌ Failed (HTTP $HTTP_CODE)"
-                  FAILED=$((FAILED + 1))
-              fi
-              
+              echo "   Posted"
               sleep 1
           done
           
-          echo ""
-          echo "📊 Posting Summary:"
-          echo "  - Total: ${#COMMENT_FILES[@]}"
-          echo "  - Successful: $SUCCESSFUL"
-          echo "  - Failed: $FAILED"
+          echo " All comments posted"
 
-      - name: 📦 Upload Analysis Artifacts
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: pr-analysis-${{ github.event.pull_request.number }}
-          path: ${{ env.ANALYSIS_DIR }}/
-          retention-days: 30
-          if-no-files-found: warn
-
-      - name: 📊 Summary
+      - name:  Summary
         if: always()
         run: |
-          echo "## 📊 PR Review Analysis Summary" >> $GITHUB_STEP_SUMMARY
+          echo "##  PR Review Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**PR Details:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
-          echo "- PR #: ${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Author: ${{ github.event.pull_request.user.login }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **PR:** #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Author:** ${{ github.event.pull_request.user.login }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -d "${{ env.ANALYSIS_DIR }}/source/pr-comments" ]; then
-            COMMENT_COUNT=$(find "${{ env.ANALYSIS_DIR }}/source/pr-comments" -name "*_analysis.md" 2>/dev/null | wc -l)
-            echo "**Review Results:**" >> $GITHUB_STEP_SUMMARY
-            echo "- Comments Generated: $COMMENT_COUNT" >> $GITHUB_STEP_SUMMARY
-            echo "- Model Used: ${{ env.MODEL }}" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            if [ $COMMENT_COUNT -gt 0 ]; then
-              echo "**Issues Found:**" >> $GITHUB_STEP_SUMMARY
-              find "${{ env.ANALYSIS_DIR }}/source/pr-comments" -name "*_analysis.md" | sort | while read file; do
-                echo "- $(basename "$file" _analysis.md)" >> $GITHUB_STEP_SUMMARY
-              done
-            else
-              echo "✅ No issues found!" >> $GITHUB_STEP_SUMMARY
-            fi
+            COUNT=$(find "${{ env.ANALYSIS_DIR }}/source/pr-comments" -name "*_analysis.md" 2>/dev/null | wc -l)
+            echo "- **Analysis files:** $COUNT" >> $GITHUB_STEP_SUMMARY
           else
-            echo "**Review Results:**" >> $GITHUB_STEP_SUMMARY
-            echo "- Comments Generated: 0" >> $GITHUB_STEP_SUMMARY
-            echo "- Model Used: ${{ env.MODEL }}" >> $GITHUB_STEP_SUMMARY
-            echo "- Status: ✅ No issues found!" >> $GITHUB_STEP_SUMMARY
+            echo "- **Status:**  No issues found" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Full analysis available in [pr-analysis artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo " *Generated by Copilot PR Reviewer*" >> $GITHUB_STEP_SUMMARY
