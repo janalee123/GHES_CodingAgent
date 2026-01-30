@@ -324,16 +324,18 @@ jobs:
             });
           }
 
-          // Fallback to standard CLI mode
+          // Fallback to standard CLI mode - using correct GHES Copilot CLI syntax
           async function runCopilotCLI(prompt) {
             const promptFile = '/tmp/copilot_prompt.txt';
             fs.writeFileSync(promptFile, prompt);
             
             try {
-              const result = execSync(`copilot -p "$(cat ${promptFile})" --no-interactive 2>&1`, {
+              // Use the same syntax as the working copilot-coder-master workflow
+              const result = execSync(`copilot -p "$(cat ${promptFile})" --add-dir "$(pwd)" --allow-all-tools 2>&1`, {
                 encoding: 'utf8',
                 maxBuffer: 10 * 1024 * 1024,
-                timeout: 300000
+                timeout: 300000,
+                cwd: process.cwd()
               });
               return result;
             } catch (error) {
@@ -349,14 +351,8 @@ jobs:
             console.log(prompt.substring(0, 1000) + '...');
             console.log('=== Running Copilot ===');
             
-            let response;
-            try {
-              // Try ACP mode first
-              response = await runCopilotACP(prompt);
-            } catch (error) {
-              console.log('ACP mode failed, falling back to CLI:', error.message);
-              response = await runCopilotCLI(prompt);
-            }
+            // Use standard CLI mode (ACP not available on this Copilot version)
+            let response = await runCopilotCLI(prompt);
             
             // Parse ACP response if needed
             if (response.includes('"jsonrpc"')) {
