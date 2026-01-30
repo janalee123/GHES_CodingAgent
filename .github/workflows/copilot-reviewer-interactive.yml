@@ -1,0 +1,55 @@
+name: Copilot Interactive Reviewer
+
+on:
+  # Initial review when label is added
+  pull_request:
+    types: [labeled]
+  
+  # Respond to @copilot mentions in PR comments
+  issue_comment:
+    types: [created]
+  
+  # Respond to @copilot mentions in review comments
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  # Initial PR review when 'copilot' label is added
+  initial-review:
+    if: |
+      github.event_name == 'pull_request' && 
+      github.event.label.name == 'copilot'
+    uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      interaction_type: 'initial_review'
+      comment_id: ''
+      comment_body: ''
+    secrets: inherit
+
+  # Respond to @copilot mentions in PR comments
+  respond-to-comment:
+    if: |
+      github.event_name == 'issue_comment' && 
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@copilot')
+    uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
+    with:
+      pr_number: ${{ github.event.issue.number }}
+      interaction_type: 'comment_reply'
+      comment_id: ${{ github.event.comment.id }}
+      comment_body: ${{ github.event.comment.body }}
+    secrets: inherit
+
+  # Respond to @copilot mentions in review comments
+  respond-to-review-comment:
+    if: |
+      github.event_name == 'pull_request_review_comment' &&
+      contains(github.event.comment.body, '@copilot')
+    uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      interaction_type: 'review_comment_reply'
+      comment_id: ${{ github.event.comment.id }}
+      comment_body: ${{ github.event.comment.body }}
+    secrets: inherit
