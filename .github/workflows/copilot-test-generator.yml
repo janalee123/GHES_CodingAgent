@@ -1,0 +1,33 @@
+name: Copilot Test Generator
+
+on:
+  # Trigger on 'generate-tests' label
+  pull_request:
+    types: [labeled]
+  
+  # Trigger on issue with 'generate-tests' label
+  issues:
+    types: [labeled]
+
+jobs:
+  generate-tests-pr:
+    if: |
+      github.event_name == 'pull_request' && 
+      github.event.label.name == 'generate-tests'
+    uses: ./.github/workflows/copilot-test-generator-master.yml
+    with:
+      trigger_type: 'pull_request'
+      pr_number: ${{ github.event.pull_request.number }}
+      issue_number: ''
+    secrets: inherit
+
+  generate-tests-issue:
+    if: |
+      github.event_name == 'issues' && 
+      github.event.label.name == 'generate-tests'
+    uses: ./.github/workflows/copilot-test-generator-master.yml
+    with:
+      trigger_type: 'issue'
+      pr_number: ''
+      issue_number: ${{ github.event.issue.number }}
+    secrets: inherit
