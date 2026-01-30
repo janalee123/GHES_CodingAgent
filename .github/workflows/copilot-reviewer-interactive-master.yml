@@ -125,12 +125,30 @@ jobs:
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/comments/${{ inputs.comment_id }}/reactions" \
             -d '{"content":"eyes"}'
 
-      - name: Setup Copilot agent script
+      - name: Setup Copilot SDK agent script
         run: |
           cat > /tmp/copilot-interactive-agent.js << 'SCRIPT_EOF'
+          /**
+           * Copilot Interactive Agent v2.0 - SDK + ACP Edition
+           * 
+           * Uses @github/copilot-sdk when available, with fallback chain:
+           * SDK â†’ ACP â†’ CLI
+           */
           const { execSync, spawn } = require('child_process');
           const fs = require('fs');
           const path = require('path');
+          
+          // Try to load SDK
+          let CopilotClient = null;
+          let useSDK = false;
+          try {
+            const sdk = require('@github/copilot-sdk');
+            CopilotClient = sdk.CopilotClient || sdk.default;
+            useSDK = true;
+            console.log('âœ… Copilot SDK loaded successfully');
+          } catch (e) {
+            console.log('âš ï¸ SDK not available, will use ACP/CLI fallback');
+          }
 
           // Configuration
           const PR_NUMBER = process.env.PR_NUMBER;
@@ -187,7 +205,7 @@ jobs:
           ## PR Information
           - **Title**: ${PR_TITLE}
           - **Author**: @${PR_AUTHOR}
-          - **Branch**: ${HEAD_BRANCH} → ${BASE_BRANCH}
+          - **Branch**: ${HEAD_BRANCH} â†’ ${BASE_BRANCH}
           - **Description**: ${PR_BODY}
 
           ## Changed Files
@@ -219,7 +237,7 @@ jobs:
           ## PR Context
           - **Title**: ${PR_TITLE}
           - **Author**: @${PR_AUTHOR}
-          - **Branch**: ${HEAD_BRANCH} → ${BASE_BRANCH}
+          - **Branch**: ${HEAD_BRANCH} â†’ ${BASE_BRANCH}
 
           ## Changed Files
           ${CHANGED_FILES}
@@ -326,6 +344,7 @@ jobs:
 
           // Fallback to standard CLI mode - using correct GHES Copilot CLI syntax
           async function runCopilotCLI(prompt) {
+            console.log('ðŸ“Ÿ Using Copilot CLI mode...');
             const promptFile = '/tmp/copilot_prompt.txt';
             fs.writeFileSync(promptFile, prompt);
             
@@ -344,15 +363,110 @@ jobs:
             }
           }
 
-          // Main execution
+          // NEW: Run using Copilot SDK (when available)
+          async function runCopilotSDK(prompt) {
+            console.log('ðŸš€ Using Copilot SDK mode...');
+            
+            if (!CopilotClient) {
+              throw new Error('SDK not available');
+            }
+            
+            const client = new CopilotClient();
+            
+            try {
+              const session = await client.createSession({
+                workingDirectory: process.cwd(),
+                // Only allow read-only tools for code review
+                tools: {
+                  allow: ['file_read', 'grep', 'glob', 'list_dir', 'read_file'],
+                  deny: ['file_write', 'terminal', 'git_commit', 'run_command']
+                }
+              });
+              
+              console.log('ðŸ“¡ SDK session created, running prompt...');
+              
+              let fullResponse = '';
+              
+              const result = await session.run({
+                prompt: prompt,
+                
+                // Progress callback for streaming
+                onProgress: (event) => {
+                  if (event.type === 'content') {
+                    process.stdout.write(event.content);
+                    fullResponse += event.content;
+                  } else if (event.type === 'tool_call') {
+                    console.log(`\nðŸ”§ Tool: ${event.tool}`);
+                  }
+                },
+                
+                // Auto-approve read-only tools
+                onToolCall: (tool, args) => {
+                  const readOnly = ['file_read', 'grep', 'glob', 'list_dir', 'read_file'];
+                  const approved = readOnly.includes(tool);
+                  console.log(`${approved ? 'âœ…' : 'âŒ'} Tool ${tool}: ${approved ? 'approved' : 'denied'}`);
+                  return approved;
+                }
+              });
+              
+              await session.close();
+              console.log('\nðŸ“ª SDK session closed');
+              
+              return result.content || fullResponse || 'Response generated.';
+              
+            } catch (error) {
+              console.error('SDK Error:', error.message);
+              throw error;
+            }
+          }
+
+          // Main execution with fallback chain: SDK â†’ ACP â†’ CLI
           async function main() {
             const prompt = buildPrompt();
-            console.log('=== Prompt ===');
-            console.log(prompt.substring(0, 1000) + '...');
-            console.log('=== Running Copilot ===');
             
-            // Use standard CLI mode (ACP not available on this Copilot version)
-            let response = await runCopilotCLI(prompt);
+            console.log('â•'.repeat(60));
+            console.log('ðŸ¤– Copilot Interactive Agent v2.0 (SDK + ACP)');
+            console.log('â•'.repeat(60));
+            console.log(`ðŸ“‹ PR: #${PR_NUMBER}`);
+            console.log(`ðŸ“Œ Interaction: ${INTERACTION_TYPE}`);
+            console.log(`ðŸ”§ SDK Available: ${useSDK}`);
+            console.log('â•'.repeat(60));
+            console.log('ðŸ“ Prompt preview:');
+            console.log(prompt.substring(0, 800) + '...\n');
+            console.log('â•'.repeat(60));
+            
+            let response;
+            let method = 'cli';
+            
+            // Try SDK first if available
+            if (useSDK) {
+              try {
+                response = await runCopilotSDK(prompt);
+                method = 'sdk';
+              } catch (sdkErr) {
+                console.log('âš ï¸ SDK failed:', sdkErr.message);
+                console.log('Falling back to ACP...');
+                try {
+                  response = await runCopilotACP(prompt);
+                  method = 'acp';
+                } catch (acpErr) {
+                  console.log('âš ï¸ ACP failed:', acpErr.message);
+                  console.log('Falling back to CLI...');
+                  response = await runCopilotCLI(prompt);
+                  method = 'cli';
+                }
+              }
+            } else {
+              // No SDK, try ACP then CLI
+              try {
+                response = await runCopilotACP(prompt);
+                method = 'acp';
+              } catch (acpErr) {
+                console.log('âš ï¸ ACP failed:', acpErr.message);
+                response = await runCopilotCLI(prompt);
+                method = 'cli';
+              }
+            }
             
             // Parse ACP response if needed
             if (response.includes('"jsonrpc"')) {
@@ -386,7 +500,8 @@ jobs:
               type: INTERACTION_TYPE,
               timestamp: new Date().toISOString(),
               user_message: COMMENT_BODY || 'Initial review request',
-              copilot_response: response.substring(0, 2000)
+              copilot_response: response.substring(0, 2000),
+              method: method  // Track which method was used (sdk/acp/cli)
             });
             
             // Keep only last 20 interactions
@@ -398,19 +513,21 @@ jobs:
             fs.writeFileSync('/tmp/copilot_response.txt', response);
             fs.writeFileSync('/tmp/session_updated.json', JSON.stringify(session, null, 2));
             
-            console.log('=== Response ===');
-            console.log(response);
+            console.log('\n' + 'â•'.repeat(60));
+            console.log(`âœ… Response generated via ${method.toUpperCase()}`);
+            console.log('â•'.repeat(60));
+            console.log(response.substring(0, 500) + '...');
           }
 
           main().catch(error => {
             console.error('Fatal error:', error);
             fs.writeFileSync('/tmp/copilot_response.txt', 
-              `⚠️ An error occurred while processing your request: ${error.message}\n\nPlease try again by mentioning @copilot.`);
+              `âš ï¸ An error occurred while processing your request: ${error.message}\n\nPlease try again by mentioning @copilot.`);
             process.exit(1);
           });
           SCRIPT_EOF
 
-      - name: Run Copilot interactive agent
+      - name: Run Copilot SDK/ACP agent
         env:
           # IMPORTANT: GH_TOKEN must be set to COPILOT_TOKEN for Copilot CLI auth
           GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
