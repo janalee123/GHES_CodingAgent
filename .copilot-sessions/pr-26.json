@@ -1,0 +1,12 @@
+{
+  "interactions": [
+    {
+      "type": "comment_reply",
+      "timestamp": "2026-01-30T15:24:21.207Z",
+      "user_message": "@copilot-agent Can you explain why you suggested using a regex instead of a simple string check?",
+      "copilot_response": "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":[{\"expected\":\"number\",\"code\":\"invalid_type\",\"path\":[\"protocolVersion\"],\"message\":\"Invalid input: expected number, received undefined\"}]}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32601,\"message\":\"\\\"Method not found\\\": agent/run\",\"data\":{\"method\":\"agent/run\"}}}",
+      "method": "acp"
+    }
+  ],
+  "context": {}
+}
