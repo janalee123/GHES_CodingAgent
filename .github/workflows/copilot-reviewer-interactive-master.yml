@@ -412,6 +412,8 @@ jobs:
 
       - name: Run Copilot interactive agent
         env:
+          # IMPORTANT: GH_TOKEN must be set to COPILOT_TOKEN for Copilot CLI auth
+          GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           INTERACTION_TYPE: ${{ inputs.interaction_type }}
           COMMENT_BODY: ${{ inputs.comment_body }}
