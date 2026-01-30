@@ -1,0 +1,625 @@
+name: Copilot Documentation Generator (Master)
+
+on:
+  workflow_call:
+    inputs:
+      trigger_type:
+        required: true
+        type: string
+        description: 'pull_request, issue, or push'
+      pr_number:
+        required: false
+        type: string
+        default: ''
+      issue_number:
+        required: false
+        type: string
+        default: ''
+      auto_mode:
+        required: false
+        type: boolean
+        default: false
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  COPILOT_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+  NODE_TLS_REJECT_UNAUTHORIZED: '0'
+
+jobs:
+  generate-docs:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changes
+        run: |
+          if [ "${{ inputs.trigger_type }}" == "pull_request" ]; then
+            # Get files from PR
+            FILES=$(curl -k -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}/files" | \
+              jq -r '.[].filename' | grep -E '\.(js|ts|py|java|go|cs|rb|php)$' | head -30)
+            
+            PR_DATA=$(curl -k -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
+            
+            echo "title=$(echo "$PR_DATA" | jq -r '.title')" >> $GITHUB_OUTPUT
+            echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
+            
+          elif [ "${{ inputs.trigger_type }}" == "issue" ]; then
+            # Parse files from issue body
+            ISSUE_DATA=$(curl -k -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}")
+            
+            echo "title=$(echo "$ISSUE_DATA" | jq -r '.title')" >> $GITHUB_OUTPUT
+            
+            BODY=$(echo "$ISSUE_DATA" | jq -r '.body // empty')
+            FILES=$(echo "$BODY" | grep -oP '(?<=Files?:\s*)[^\n]+' | tr ',' '\n' | tr -d ' ' | head -30)
+            
+            if [ -z "$FILES" ]; then
+              # Document all source files if not specified
+              FILES=$(find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.py" -o -name "*.java" -o -name "*.go" \) \
+                -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/test*/*" | head -30)
+            fi
+          else
+            # Push: get changed files from commit
+            FILES=$(git diff --name-only HEAD~1 HEAD -- '*.js' '*.ts' '*.py' '*.java' '*.go' '*.cs' | head -30)
+            echo "title=Auto-update documentation" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Detect project structure
+        id: detect
+        run: |
+          # Detect language and doc format
+          if [ -f "package.json" ]; then
+            LANG="javascript"
+            DOC_FORMAT="jsdoc"
+            DOC_DIR="docs"
+          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+            LANG="python"
+            DOC_FORMAT="sphinx"
+            DOC_DIR="docs"
+          elif [ -f "go.mod" ]; then
+            LANG="go"
+            DOC_FORMAT="godoc"
+            DOC_DIR="docs"
+          elif [ -f "pom.xml" ] || [ -f "build.gradle" ]; then
+            LANG="java"
+            DOC_FORMAT="javadoc"
+            DOC_DIR="docs"
+          else
+            LANG="generic"
+            DOC_FORMAT="markdown"
+            DOC_DIR="docs"
+          fi
+          
+          echo "language=$LANG" >> $GITHUB_OUTPUT
+          echo "doc_format=$DOC_FORMAT" >> $GITHUB_OUTPUT
+          echo "doc_dir=$DOC_DIR" >> $GITHUB_OUTPUT
+          
+          # Check for existing docs
+          if [ -f "README.md" ]; then
+            echo "has_readme=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_readme=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -d "docs" ]; then
+            echo "has_docs_dir=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_docs_dir=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Read source files
+        run: |
+          FILES="${{ steps.changes.outputs.files }}"
+          
+          mkdir -p /tmp/sources
+          echo "" > /tmp/sources/all_sources.txt
+          
+          for FILE in $FILES; do
+            if [ -f "$FILE" ]; then
+              echo "=== FILE: $FILE ===" >> /tmp/sources/all_sources.txt
+              head -300 "$FILE" >> /tmp/sources/all_sources.txt
+              echo -e "\n" >> /tmp/sources/all_sources.txt
+            fi
+          done
+          
+          # Also read existing README for context
+          if [ -f "README.md" ]; then
+            echo "=== EXISTING README ===" >> /tmp/sources/existing_docs.txt
+            cat README.md >> /tmp/sources/existing_docs.txt
+          fi
+          
+          # Read existing API docs if present
+          if [ -d "docs" ]; then
+            find docs -name "*.md" -exec sh -c 'echo "=== {} ===" && head -100 "{}"' \; >> /tmp/sources/existing_docs.txt 2>/dev/null || true
+          fi
+
+      - name: Post acknowledgment
+        if: inputs.auto_mode == false
+        run: |
+          if [ "${{ inputs.trigger_type }}" == "pull_request" ]; then
+            TARGET_URL="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/comments"
+          else
+            TARGET_URL="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}/comments"
+          fi
+          
+          COMMENT="📚 **Documentation Generator Agent** is analyzing your code...
+
+          **Configuration:**
+          - Language: \`${{ steps.detect.outputs.language }}\`
+          - Doc Format: \`${{ steps.detect.outputs.doc_format }}\`
+
+          I'll generate/update documentation for:
+          \`\`\`
+          ${{ steps.changes.outputs.files }}
+          \`\`\`
+
+          ⏳ Processing..."
+          
+          curl -k -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$TARGET_URL" \
+            -d "$(jq -n --arg body "$COMMENT" '{body: $body}')"
+
+      - name: Setup documentation agent
+        run: |
+          cat > /tmp/doc-generator-agent.js << 'AGENT_EOF'
+          const { execSync } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+
+          // Configuration
+          const LANGUAGE = process.env.LANGUAGE || 'javascript';
+          const DOC_FORMAT = process.env.DOC_FORMAT || 'markdown';
+          const DOC_DIR = process.env.DOC_DIR || 'docs';
+          const SOURCE_FILES = (process.env.SOURCE_FILES || '').split('\n').filter(f => f.trim());
+          const AUTO_MODE = process.env.AUTO_MODE === 'true';
+
+          // Read sources
+          const sourcesContent = fs.existsSync('/tmp/sources/all_sources.txt')
+            ? fs.readFileSync('/tmp/sources/all_sources.txt', 'utf8')
+            : '';
+          
+          const existingDocs = fs.existsSync('/tmp/sources/existing_docs.txt')
+            ? fs.readFileSync('/tmp/sources/existing_docs.txt', 'utf8')
+            : '';
+
+          // Doc format templates
+          const docTemplates = {
+            jsdoc: {
+              function: `/**
+           * Description of the function
+           * @param {Type} paramName - Parameter description
+           * @returns {Type} Return value description
+           * @throws {Error} Error description
+           * @example
+           * // Example usage
+           * functionName(arg);
+           */`,
+              class: `/**
+           * Class description
+           * @class
+           * @extends ParentClass
+           */`
+            },
+            sphinx: {
+              function: `"""
+          Description of the function.
+
+          Args:
+              param_name (type): Parameter description.
+
+          Returns:
+              type: Return value description.
+
+          Raises:
+              ExceptionType: Exception description.
+
+          Example:
+              >>> function_name(arg)
+              result
+          """`,
+              class: `"""
+          Class description.
+
+          Attributes:
+              attr_name (type): Attribute description.
+          """`
+            },
+            godoc: {
+              function: `// FunctionName does something.
+          //
+          // It takes parameters and returns values.
+          // Example usage:
+          //
+          //     result := FunctionName(arg)
+          //`,
+              type: `// TypeName represents something.
+          //
+          // Fields:
+          //   - FieldName: description
+          `
+            }
+          };
+
+          const template = docTemplates[DOC_FORMAT] || docTemplates.jsdoc;
+
+          // Build prompt based on what we need to generate
+          function buildPrompt() {
+            return `You are an expert technical writer. Generate comprehensive documentation for the provided source code.
+
+          ## Project Configuration
+          - **Language**: ${LANGUAGE}
+          - **Documentation Format**: ${DOC_FORMAT}
+          - **Output Directory**: ${DOC_DIR}
+
+          ## Documentation Style Guide
+          ${JSON.stringify(template, null, 2)}
+
+          ## Source Files to Document
+          ${sourcesContent.substring(0, 25000)}
+
+          ${existingDocs ? `## Existing Documentation (for context/updating)\n${existingDocs.substring(0, 10000)}` : ''}
+
+          ## Instructions
+
+          Generate the following documentation:
+
+          ### 1. API Reference Documentation
+          For each module/file, create detailed API documentation including:
+          - Module overview and purpose
+          - All exported functions/classes with full signatures
+          - Parameter descriptions with types
+          - Return value descriptions
+          - Usage examples
+          - Error handling notes
+
+          ### 2. README Updates (if applicable)
+          If the code changes affect the README, provide updated sections for:
+          - Installation instructions
+          - Usage examples
+          - API overview
+          - Configuration options
+
+          ### 3. Inline Documentation
+          Provide properly formatted inline documentation (JSDoc/docstrings/comments) that should be added to the source files.
+
+          ## Output Format
+
+          Structure your output as follows:
+
+          ### DOC FILE: docs/api/{module-name}.md
+          \`\`\`markdown
+          # Module Name
+
+          ## Overview
+          ...
+
+          ## Functions
+
+          ### functionName(params)
+          ...
+          \`\`\`
+
+          ### DOC FILE: docs/README-UPDATES.md
+          \`\`\`markdown
+          ## Suggested README Updates
+          ...
+          \`\`\`
+
+          ### INLINE DOCS: path/to/source.js
+          \`\`\`${LANGUAGE}
+          // Add these comments above the respective functions:
+
+          /**
+           * Function documentation...
+           */
+          \`\`\`
+
+          Generate comprehensive documentation now:`;
+          }
+
+          // Run Copilot
+          function runCopilot(prompt) {
+            const promptFile = '/tmp/doc_prompt.txt';
+            fs.writeFileSync(promptFile, prompt);
+            
+            try {
+              const result = execSync(`copilot -p "$(cat ${promptFile})" --no-interactive 2>&1`, {
+                encoding: 'utf8',
+                maxBuffer: 20 * 1024 * 1024,
+                timeout: 600000,
+                cwd: process.cwd()
+              });
+              return result;
+            } catch (error) {
+              console.error('Copilot error:', error.message);
+              return error.stdout || '';
+            }
+          }
+
+          // Parse response to extract doc files
+          function parseDocFiles(response) {
+            const docFiles = [];
+            const inlineDocs = [];
+            
+            // Match DOC FILE sections
+            const docFileRegex = /### DOC FILE:\s*([^\n]+)\n```[\w]*\n([\s\S]*?)```/g;
+            let match;
+            while ((match = docFileRegex.exec(response)) !== null) {
+              docFiles.push({
+                path: match[1].trim(),
+                content: match[2].trim(),
+                type: 'doc'
+              });
+            }
+            
+            // Match INLINE DOCS sections
+            const inlineRegex = /### INLINE DOCS:\s*([^\n]+)\n```[\w]*\n([\s\S]*?)```/g;
+            while ((match = inlineRegex.exec(response)) !== null) {
+              inlineDocs.push({
+                path: match[1].trim(),
+                content: match[2].trim(),
+                type: 'inline'
+              });
+            }
+            
+            // Fallback: extract any markdown code blocks
+            if (docFiles.length === 0) {
+              const fallbackRegex = /```markdown\n([\s\S]*?)```/g;
+              let index = 0;
+              while ((match = fallbackRegex.exec(response)) !== null) {
+                docFiles.push({
+                  path: `${DOC_DIR}/generated-doc-${index}.md`,
+                  content: match[1].trim(),
+                  type: 'doc'
+                });
+                index++;
+              }
+            }
+            
+            return { docFiles, inlineDocs };
+          }
+
+          // Main execution
+          async function main() {
+            console.log('=== Documentation Generator Agent ===');
+            console.log(`Language: ${LANGUAGE}`);
+            console.log(`Format: ${DOC_FORMAT}`);
+            console.log(`Auto Mode: ${AUTO_MODE}`);
+            console.log(`Files to document: ${SOURCE_FILES.length}`);
+            
+            const prompt = buildPrompt();
+            
+            console.log('\n=== Running Copilot ===');
+            const response = runCopilot(prompt);
+            
+            console.log('\n=== Parsing Response ===');
+            const { docFiles, inlineDocs } = parseDocFiles(response);
+            
+            console.log(`Found ${docFiles.length} doc files and ${inlineDocs.length} inline doc suggestions`);
+            
+            // Create documentation files
+            for (const file of docFiles) {
+              const fullPath = path.join(process.cwd(), file.path);
+              const dir = path.dirname(fullPath);
+              
+              if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+              }
+              
+              fs.writeFileSync(fullPath, file.content);
+              console.log(`Created: ${file.path}`);
+            }
+            
+            // Save results
+            const results = {
+              success: docFiles.length > 0,
+              docFiles,
+              inlineDocs,
+              raw_response: response.substring(0, 50000)
+            };
+            
+            fs.writeFileSync('/tmp/doc_results.json', JSON.stringify(results, null, 2));
+            fs.writeFileSync('/tmp/copilot_response.txt', response);
+          }
+
+          main().catch(error => {
+            console.error('Fatal error:', error);
+            fs.writeFileSync('/tmp/doc_results.json', JSON.stringify({
+              success: false,
+              error: error.message,
+              docFiles: [],
+              inlineDocs: []
+            }));
+            process.exit(1);
+          });
+          AGENT_EOF
+
+      - name: Run documentation agent
+        env:
+          LANGUAGE: ${{ steps.detect.outputs.language }}
+          DOC_FORMAT: ${{ steps.detect.outputs.doc_format }}
+          DOC_DIR: ${{ steps.detect.outputs.doc_dir }}
+          SOURCE_FILES: ${{ steps.changes.outputs.files }}
+          AUTO_MODE: ${{ inputs.auto_mode }}
+        run: |
+          cd $GITHUB_WORKSPACE
+          node /tmp/doc-generator-agent.js
+
+      - name: Commit documentation
+        id: commit
+        run: |
+          RESULTS=$(cat /tmp/doc_results.json)
+          DOC_COUNT=$(echo "$RESULTS" | jq '.docFiles | length')
+          
+          if [ "$DOC_COUNT" -gt 0 ]; then
+            git config user.name "copilot-agent[bot]"
+            git config user.email "copilot-agent[bot]@users.noreply.github.com"
+            
+            if [ "${{ inputs.trigger_type }}" == "pull_request" ]; then
+              BRANCH="${{ steps.changes.outputs.head_branch }}"
+              git fetch origin "$BRANCH"
+              git checkout "$BRANCH"
+            elif [ "${{ inputs.trigger_type }}" == "issue" ]; then
+              BRANCH="copilot/docs-issue-${{ inputs.issue_number }}"
+              git checkout -b "$BRANCH"
+            else
+              # Auto mode - create PR branch
+              BRANCH="copilot/auto-docs-$(date +%Y%m%d-%H%M%S)"
+              git checkout -b "$BRANCH"
+            fi
+            
+            git add -A
+            
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+              echo "committed=false" >> $GITHUB_OUTPUT
+            else
+              COMMIT_MSG="📚 Update documentation
+
+          Generated by Copilot Documentation Agent
+          - Format: ${{ steps.detect.outputs.doc_format }}
+          - Files: $DOC_COUNT documentation file(s)
+
+          Co-authored-by: GitHub Copilot <copilot@github.com>"
+              
+              git commit -m "$COMMIT_MSG"
+              git push origin "$BRANCH"
+              
+              echo "committed=true" >> $GITHUB_OUTPUT
+              echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+              echo "doc_count=$DOC_COUNT" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No documentation generated"
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR for auto/issue mode
+        if: (inputs.trigger_type == 'issue' || inputs.trigger_type == 'push') && steps.commit.outputs.committed == 'true'
+        run: |
+          if [ "${{ inputs.trigger_type }}" == "issue" ]; then
+            PR_TITLE="📚 Documentation for issue #${{ inputs.issue_number }}"
+            PR_REF="Issue #${{ inputs.issue_number }}"
+          else
+            PR_TITLE="📚 Auto-update documentation"
+            PR_REF="automatic trigger on push"
+          fi
+          
+          DOC_FILES=$(cat /tmp/doc_results.json | jq -r '.docFiles[].path' | sed 's/^/- /')
+          
+          PR_BODY="## 📚 Documentation Update
+
+          This PR contains documentation generated/updated by the Copilot Documentation Agent.
+
+          **Triggered by:** $PR_REF
+          **Format:** ${{ steps.detect.outputs.doc_format }}
+          **Files Generated:** ${{ steps.commit.outputs.doc_count }}
+
+          ### Documentation Files
+          $DOC_FILES
+
+          ---
+          Please review the generated documentation before merging."
+          
+          curl -k -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls" \
+            -d "$(jq -n \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg head "${{ steps.commit.outputs.branch }}" \
+              --arg base "main" \
+              '{title: $title, body: $body, head: $head, base: $base}')"
+
+      - name: Post completion comment
+        if: inputs.auto_mode == false
+        run: |
+          RESULTS=$(cat /tmp/doc_results.json)
+          DOC_COUNT=$(echo "$RESULTS" | jq '.docFiles | length')
+          INLINE_COUNT=$(echo "$RESULTS" | jq '.inlineDocs | length')
+          DOC_LIST=$(echo "$RESULTS" | jq -r '.docFiles[].path' | sed 's/^/- `/' | sed 's/$/`/')
+          
+          if [ "${{ inputs.trigger_type }}" == "pull_request" ]; then
+            TARGET_URL="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/comments"
+          else
+            TARGET_URL="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}/comments"
+          fi
+          
+          if [ "$DOC_COUNT" -gt 0 ]; then
+            INLINE_SECTION=""
+            if [ "$INLINE_COUNT" -gt 0 ]; then
+              INLINE_SUGGESTIONS=$(echo "$RESULTS" | jq -r '.inlineDocs[:3] | .[] | "**\(.path)**\n```\n\(.content | .[0:500])\n```\n"')
+              INLINE_SECTION="
+          ### 💡 Inline Documentation Suggestions
+          The following inline documentation could be added to your source files:
+
+          $INLINE_SUGGESTIONS
+
+          _(Add these comments directly above the respective functions/classes)_"
+            fi
+            
+            COMMENT="✅ **Documentation Generation Complete!**
+
+          I've generated **$DOC_COUNT documentation file(s)** and committed them.
+
+          ### Generated Files
+          $DOC_LIST
+          $INLINE_SECTION
+
+          ### Next Steps
+          1. Review the generated documentation
+          2. Check that examples are accurate
+          3. Add any domain-specific context
+
+          ---
+          💡 **Tip:** Add the \`generate-docs\` label again to regenerate documentation."
+          else
+            COMMENT="⚠️ **Documentation Generation Complete**
+
+          No documentation files were created. Preview of generated content:
+
+          \`\`\`
+          $(cat /tmp/copilot_response.txt | head -80)
+          \`\`\`
+
+          Try specifying files explicitly: \`Files: src/module.js, lib/utils.py\`"
+          fi
+          
+          curl -k -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$TARGET_URL" \
+            -d "$(jq -n --arg body "$COMMENT" '{body: $body}')"
+
+      - name: Remove label
+        if: inputs.auto_mode == false
+        run: |
+          if [ "${{ inputs.trigger_type }}" == "pull_request" ]; then
+            TARGET="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/labels/generate-docs"
+          else
+            TARGET="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}/labels/generate-docs"
+          fi
+          
+          curl -k -s -X DELETE \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$TARGET" || true
