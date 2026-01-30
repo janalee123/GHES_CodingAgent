@@ -47,7 +47,6 @@ jobs:
           echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
           echo "author=$(echo "$PR_DATA" | jq -r '.user.login')" >> $GITHUB_OUTPUT
           
-          # Handle multi-line body with heredoc
           echo "body<<EOFBODY" >> $GITHUB_OUTPUT
           echo "$PR_DATA" | jq -r '.body // empty' >> $GITHUB_OUTPUT
           echo "EOFBODY" >> $GITHUB_OUTPUT
@@ -60,10 +59,8 @@ jobs:
             -H "Accept: application/vnd.github.v3.diff" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
           
-          # Save diff to file (may be large)
           echo "$DIFF" > /tmp/pr_diff.txt
           
-          # Get changed files list
           FILES=$(curl -k -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -79,7 +76,6 @@ jobs:
         run: |
           SESSION_FILE=".copilot-sessions/pr-${{ inputs.pr_number }}.json"
           
-          # Check if session file exists in repo
           SESSION_DATA=$(curl -k -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -96,16 +92,13 @@ jobs:
           fi
 
       - name: Fetch conversation history
-        id: history
         run: |
-          # Get all comments on the PR for context
           COMMENTS=$(curl -k -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/comments" | \
             jq '[.[] | {author: .user.login, body: .body, created_at: .created_at}]')
           
-          # Get review comments
           REVIEW_COMMENTS=$(curl -k -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -118,39 +111,25 @@ jobs:
       - name: Acknowledge interaction
         if: inputs.interaction_type != 'initial_review'
         run: |
-          # Add a reaction to show we're processing
           curl -k -s -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/comments/${{ inputs.comment_id }}/reactions" \
             -d '{"content":"eyes"}'
 
-      - name: Setup Copilot SDK agent script
+      - name: Setup Copilot ACP agent script
         run: |
-          cat > /tmp/copilot-interactive-agent.js << 'SCRIPT_EOF'
+          cat > /tmp/copilot-acp-agent.mjs << 'SCRIPT_EOF'
           /**
-           * Copilot Interactive Agent v2.0 - SDK + ACP Edition
-           * 
-           * Uses @github/copilot-sdk when available, with fallback chain:
-           * SDK -> ACP -> CLI
+           * Copilot Interactive Agent v3.0 - Proper ACP Implementation
+           * Uses @agentclientprotocol/sdk for correct protocol handling
            */
-          const { execSync, spawn } = require('child_process');
-          const fs = require('fs');
-          const path = require('path');
-          
-          // Try to load SDK
-          let CopilotClient = null;
-          let useSDK = false;
-          try {
-            const sdk = require('@github/copilot-sdk');
-            CopilotClient = sdk.CopilotClient || sdk.default;
-            useSDK = true;
-            console.log('[OK] Copilot SDK loaded successfully');
-          } catch (e) {
-            console.log('[WARN] SDK not available, will use ACP/CLI fallback');
-          }
+          import { spawn } from 'node:child_process';
+          import { Readable, Writable } from 'node:stream';
+          import * as fs from 'node:fs';
+          import * as acp from '@agentclientprotocol/sdk';
 
-          // Configuration
+          // Configuration from environment
           const PR_NUMBER = process.env.PR_NUMBER;
           const INTERACTION_TYPE = process.env.INTERACTION_TYPE;
           const COMMENT_BODY = process.env.COMMENT_BODY || '';
@@ -161,375 +140,238 @@ jobs:
           const HEAD_BRANCH = process.env.HEAD_BRANCH;
           const BASE_BRANCH = process.env.BASE_BRANCH;
 
-          // Load context
+          // Load context files
           const diff = fs.readFileSync('/tmp/pr_diff.txt', 'utf8');
           const prComments = JSON.parse(fs.readFileSync('/tmp/pr_comments.json', 'utf8'));
-          const reviewComments = JSON.parse(fs.readFileSync('/tmp/review_comments.json', 'utf8'));
           const session = JSON.parse(fs.readFileSync('/tmp/session.json', 'utf8'));
 
-          // Build conversation history for context
+          // Build conversation context
           function buildConversationContext() {
             let context = '';
-            
-            // Add previous interactions from session
             if (session.interactions && session.interactions.length > 0) {
-              context += '\n## Previous Interactions in this PR:\n';
+              context += '\n## Previous Interactions:\n';
               session.interactions.slice(-5).forEach((interaction, i) => {
-                context += `\n### Interaction ${i + 1} (${interaction.type}):\n`;
+                context += `\n### ${i + 1}. ${interaction.type}:\n`;
                 context += `User: ${interaction.user_message}\n`;
                 context += `Copilot: ${interaction.copilot_response.substring(0, 500)}...\n`;
               });
             }
-            
-            // Add recent comments for context
             if (prComments.length > 0) {
-              context += '\n## Recent PR Comments:\n';
-              prComments.slice(-10).forEach(comment => {
-                context += `- @${comment.author}: ${comment.body.substring(0, 200)}\n`;
+              context += '\n## Recent Comments:\n';
+              prComments.slice(-10).forEach(c => {
+                context += `- @${c.author}: ${c.body.substring(0, 200)}\n`;
               });
             }
-            
             return context;
           }
 
-          // Build the appropriate prompt based on interaction type
+          // Build prompt
           function buildPrompt() {
-            const conversationContext = buildConversationContext();
+            const ctx = buildConversationContext();
             
-            let prompt = '';
-            
-            switch (INTERACTION_TYPE) {
-              case 'initial_review':
-                prompt = `You are an expert code reviewer helping with PR #${PR_NUMBER}.
+            if (INTERACTION_TYPE === 'initial_review') {
+              return `You are an expert code reviewer for PR #${PR_NUMBER}.
 
-          ## PR Information
-          - **Title**: ${PR_TITLE}
-          - **Author**: @${PR_AUTHOR}
-          - **Branch**: ${HEAD_BRANCH} -> ${BASE_BRANCH}
-          - **Description**: ${PR_BODY}
+## PR Info
+- Title: ${PR_TITLE}
+- Author: @${PR_AUTHOR}
+- Branch: ${HEAD_BRANCH} -> ${BASE_BRANCH}
+- Description: ${PR_BODY}
 
-          ## Changed Files
-          ${CHANGED_FILES}
+## Changed Files
+${CHANGED_FILES}
 
-          ## Code Diff
-          \`\`\`diff
-          ${diff.substring(0, 15000)}
-          \`\`\`
+## Diff
+\`\`\`diff
+${diff.substring(0, 15000)}
+\`\`\`
 
-          ## Instructions
-          Please provide a thorough code review:
-          1. **Summary**: Brief overview of changes
-          2. **Strengths**: What's done well
-          3. **Suggestions**: Improvements with specific file/line references
-          4. **Questions**: Clarifications needed from the author
-          5. **Security/Performance**: Any concerns
+Please provide a thorough code review:
+1. Summary of changes
+2. Strengths
+3. Suggestions with file/line references
+4. Questions for the author
+5. Security/Performance concerns
 
-          End your review by mentioning that the author can ask follow-up questions by mentioning @copilot in comments.`;
-                break;
-                
-              case 'comment_reply':
-              case 'review_comment_reply':
-                // Extract the actual question (remove @copilot mention)
-                const userQuestion = COMMENT_BODY.replace(/@copilot/gi, '').trim();
-                
-                prompt = `You are an expert code reviewer continuing a conversation about PR #${PR_NUMBER}.
+End by mentioning @copilot for follow-up questions.`;
+            } else {
+              const question = COMMENT_BODY.replace(/@copilot[-\w]*/gi, '').trim();
+              return `You are continuing a code review conversation for PR #${PR_NUMBER}.
 
-          ## PR Context
-          - **Title**: ${PR_TITLE}
-          - **Author**: @${PR_AUTHOR}
-          - **Branch**: ${HEAD_BRANCH} -> ${BASE_BRANCH}
+## PR Context
+- Title: ${PR_TITLE}
+- Author: @${PR_AUTHOR}
+- Branch: ${HEAD_BRANCH} -> ${BASE_BRANCH}
 
-          ## Changed Files
-          ${CHANGED_FILES}
+## Files Changed
+${CHANGED_FILES}
 
-          ## Code Diff (for reference)
-          \`\`\`diff
-          ${diff.substring(0, 10000)}
-          \`\`\`
+## Diff
+\`\`\`diff
+${diff.substring(0, 10000)}
+\`\`\`
 
-          ${conversationContext}
+${ctx}
 
-          ## Current Question from Developer
-          "${userQuestion}"
+## Developer Question
+"${question}"
 
-          ## Instructions
-          Please respond helpfully to the developer's question. You have full context of the PR and previous conversations.
-          - Be specific and reference code/files when relevant
-          - If asked to explain code, provide clear explanations
-          - If asked for alternatives, provide concrete examples
-          - If asked to make changes, describe what should be modified
-          - Keep your response focused and actionable
-          - Remind them they can continue asking questions with @copilot`;
-                break;
-                
-              default:
-                prompt = `Respond to this interaction about PR #${PR_NUMBER}: ${COMMENT_BODY}`;
+Respond helpfully. Reference code when relevant. Remind them to use @copilot for more questions.`;
             }
+          }
+
+          // Run with ACP protocol
+          async function runWithACP(promptText) {
+            console.log('[ACP] Starting Copilot with ACP protocol...');
             
-            return prompt;
-          }
-
-          // Run Copilot with ACP mode
-          async function runCopilotACP(prompt) {
-            return new Promise((resolve, reject) => {
-              // Start Copilot in ACP mode
-              const copilot = spawn('copilot', ['--acp'], {
-                stdio: ['pipe', 'pipe', 'pipe'],
-                env: { ...process.env }
-              });
-              
-              let response = '';
-              let errorOutput = '';
-              
-              copilot.stdout.on('data', (data) => {
-                const text = data.toString();
-                response += text;
-                process.stdout.write(text); // Stream to logs
-              });
-              
-              copilot.stderr.on('data', (data) => {
-                errorOutput += data.toString();
-              });
-              
-              copilot.on('close', (code) => {
-                if (code === 0 || response.length > 0) {
-                  resolve(response);
-                } else {
-                  reject(new Error(`Copilot exited with code ${code}: ${errorOutput}`));
-                }
-              });
-              
-              // Send ACP initialize and prompt
-              const initMessage = JSON.stringify({
-                jsonrpc: '2.0',
-                id: 1,
-                method: 'initialize',
-                params: {
-                  capabilities: {},
-                  clientInfo: { name: 'ghes-interactive-reviewer', version: '1.0.0' }
-                }
-              }) + '\n';
-              
-              const promptMessage = JSON.stringify({
-                jsonrpc: '2.0',
-                id: 2,
-                method: 'agent/run',
-                params: {
-                  prompt: prompt,
-                  workingDirectory: process.cwd(),
-                  options: {
-                    allowTools: ['file_read', 'grep', 'glob'],
-                    disallowTools: ['file_write', 'terminal', 'git_commit']
-                  }
-                }
-              }) + '\n';
-              
-              copilot.stdin.write(initMessage);
-              setTimeout(() => {
-                copilot.stdin.write(promptMessage);
-                copilot.stdin.end();
-              }, 100);
-              
-              // Timeout after 5 minutes
-              setTimeout(() => {
-                copilot.kill();
-                if (response.length > 0) {
-                  resolve(response);
-                } else {
-                  reject(new Error('Copilot timed out'));
-                }
-              }, 300000);
+            const copilotProcess = spawn('copilot', ['--acp', '--stdio'], {
+              stdio: ['pipe', 'pipe', 'inherit'],
+              env: process.env
             });
+
+            if (!copilotProcess.stdin || !copilotProcess.stdout) {
+              throw new Error('Failed to start Copilot ACP process');
+            }
+
+            const output = Writable.toWeb(copilotProcess.stdin);
+            const input = Readable.toWeb(copilotProcess.stdout);
+            const stream = acp.ndJsonStream(output, input);
+
+            let fullResponse = '';
+
+            const client = {
+              async requestPermission(params) {
+                // Allow read-only operations, deny writes
+                const tool = params.permissions?.[0]?.tool || '';
+                const readOnly = ['read', 'grep', 'glob', 'list', 'search'].some(t => tool.toLowerCase().includes(t));
+                console.log(`[ACP] Permission ${tool}: ${readOnly ? 'granted' : 'denied'}`);
+                return { outcome: { outcome: readOnly ? 'granted' : 'cancelled' } };
+              },
+              async sessionUpdate(params) {
+                const update = params.update;
+                if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+                  process.stdout.write(update.content.text);
+                  fullResponse += update.content.text;
+                }
+              }
+            };
+
+            const connection = new acp.ClientSideConnection((_agent) => client, stream);
+
+            console.log('[ACP] Initializing connection...');
+            await connection.initialize({
+              protocolVersion: acp.PROTOCOL_VERSION,
+              clientCapabilities: {}
+            });
+
+            console.log('[ACP] Creating session...');
+            const sessionResult = await connection.newSession({
+              cwd: process.cwd(),
+              mcpServers: []
+            });
+
+            console.log('[ACP] Session started, sending prompt...');
+            const promptResult = await connection.prompt({
+              sessionId: sessionResult.sessionId,
+              prompt: [{ type: 'text', text: promptText }]
+            });
+
+            console.log(`\n[ACP] Prompt finished: ${promptResult.stopReason}`);
+
+            // Cleanup
+            copilotProcess.stdin.end();
+            copilotProcess.kill('SIGTERM');
+            await new Promise(resolve => {
+              copilotProcess.once('exit', resolve);
+              setTimeout(resolve, 2000);
+            });
+
+            return fullResponse;
           }
 
-          // Fallback to standard CLI mode - using correct GHES Copilot CLI syntax
-          async function runCopilotCLI(prompt) {
-            console.log('[CLI] Using Copilot CLI mode...');
-            const promptFile = '/tmp/copilot_prompt.txt';
-            fs.writeFileSync(promptFile, prompt);
+          // Fallback to CLI
+          async function runWithCLI(promptText) {
+            console.log('[CLI] Using Copilot CLI fallback...');
+            const { execSync } = await import('node:child_process');
+            
+            fs.writeFileSync('/tmp/copilot_prompt.txt', promptText);
             
             try {
-              // Use the same syntax as the working copilot-coder-master workflow
-              const result = execSync(`copilot -p "$(cat ${promptFile})" --add-dir "$(pwd)" --allow-all-tools 2>&1`, {
-                encoding: 'utf8',
-                maxBuffer: 10 * 1024 * 1024,
-                timeout: 300000,
-                cwd: process.cwd()
-              });
+              const result = execSync(
+                'copilot -p "$(cat /tmp/copilot_prompt.txt)" --add-dir "$(pwd)" --allow-all-tools 2>&1',
+                { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, timeout: 300000, cwd: process.cwd() }
+              );
               return result;
             } catch (error) {
-              console.error('CLI Error:', error.message);
-              return error.stdout || 'Unable to generate response. Please try again.';
+              console.error('[CLI] Error:', error.message);
+              return error.stdout || 'Unable to generate response.';
             }
           }
 
-          // NEW: Run using Copilot SDK (when available)
-          async function runCopilotSDK(prompt) {
-            console.log('[SDK] Using Copilot SDK mode...');
-            
-            if (!CopilotClient) {
-              throw new Error('SDK not available');
-            }
-            
-            const client = new CopilotClient();
-            
-            try {
-              const session = await client.createSession({
-                workingDirectory: process.cwd(),
-                // Only allow read-only tools for code review
-                tools: {
-                  allow: ['file_read', 'grep', 'glob', 'list_dir', 'read_file'],
-                  deny: ['file_write', 'terminal', 'git_commit', 'run_command']
-                }
-              });
-              
-              console.log('[SDK] Session created, running prompt...');
-              
-              let fullResponse = '';
-              
-              const result = await session.run({
-                prompt: prompt,
-                
-                // Progress callback for streaming
-                onProgress: (event) => {
-                  if (event.type === 'content') {
-                    process.stdout.write(event.content);
-                    fullResponse += event.content;
-                  } else if (event.type === 'tool_call') {
-                    console.log('\n[Tool] ' + event.tool);
-                  }
-                },
-                
-                // Auto-approve read-only tools
-                onToolCall: (tool, args) => {
-                  const readOnly = ['file_read', 'grep', 'glob', 'list_dir', 'read_file'];
-                  const approved = readOnly.includes(tool);
-                  console.log((approved ? '[OK] ' : '[DENY] ') + 'Tool ' + tool + ': ' + (approved ? 'approved' : 'denied'));
-                  return approved;
-                }
-              });
-              
-              await session.close();
-              console.log('\n[SDK] Session closed');
-              
-              return result.content || fullResponse || 'Response generated.';
-              
-            } catch (error) {
-              console.error('SDK Error:', error.message);
-              throw error;
-            }
-          }
-
-          // Main execution with fallback chain: SDK -> ACP -> CLI
+          // Main
           async function main() {
             const prompt = buildPrompt();
             
             console.log('='.repeat(60));
-            console.log('Copilot Interactive Agent v2.0 (SDK + ACP)');
+            console.log('Copilot Interactive Agent v3.0 (ACP)');
             console.log('='.repeat(60));
-            console.log('PR: #' + PR_NUMBER);
-            console.log('Interaction: ' + INTERACTION_TYPE);
-            console.log('SDK Available: ' + useSDK);
+            console.log(`PR: #${PR_NUMBER}`);
+            console.log(`Interaction: ${INTERACTION_TYPE}`);
             console.log('='.repeat(60));
             console.log('Prompt preview:');
-            console.log(prompt.substring(0, 800) + '...\n');
+            console.log(prompt.substring(0, 600) + '...');
             console.log('='.repeat(60));
-            
+
             let response;
             let method = 'cli';
-            
-            // Try SDK first if available
-            if (useSDK) {
-              try {
-                response = await runCopilotSDK(prompt);
-                method = 'sdk';
-              } catch (sdkErr) {
-                console.log('[WARN] SDK failed:', sdkErr.message);
-                console.log('Falling back to ACP...');
-                try {
-                  response = await runCopilotACP(prompt);
-                  method = 'acp';
-                } catch (acpErr) {
-                  console.log('[WARN] ACP failed:', acpErr.message);
-                  console.log('Falling back to CLI...');
-                  response = await runCopilotCLI(prompt);
-                  method = 'cli';
-                }
-              }
-            } else {
-              // No SDK, try ACP then CLI
-              try {
-                response = await runCopilotACP(prompt);
-                method = 'acp';
-              } catch (acpErr) {
-                console.log('[WARN] ACP failed:', acpErr.message);
-                response = await runCopilotCLI(prompt);
-                method = 'cli';
-              }
+
+            // Try ACP first, fall back to CLI
+            try {
+              response = await runWithACP(prompt);
+              method = 'acp';
+            } catch (acpError) {
+              console.log('[WARN] ACP failed:', acpError.message);
+              console.log('[INFO] Falling back to CLI...');
+              response = await runWithCLI(prompt);
+              method = 'cli';
             }
-            
-            // Parse ACP response if needed
-            if (response.includes('"jsonrpc"')) {
-              try {
-                const lines = response.split('\n').filter(l => l.trim());
-                for (const line of lines) {
-                  const parsed = JSON.parse(line);
-                  if (parsed.result && parsed.result.content) {
-                    response = parsed.result.content;
-                    break;
-                  }
-                  if (parsed.params && parsed.params.content) {
-                    response = parsed.params.content;
-                    break;
-                  }
-                }
-              } catch (e) {
-                // Keep original response if parsing fails
-              }
-            }
-            
-            // Clean up response
+
             response = response.trim();
             if (!response) {
-              response = 'I was unable to generate a response. Please try again or rephrase your question.';
+              response = 'Unable to generate response. Please try again.';
             }
-            
-            // Update session with this interaction
+
+            // Update session
             session.interactions = session.interactions || [];
             session.interactions.push({
               type: INTERACTION_TYPE,
               timestamp: new Date().toISOString(),
-              user_message: COMMENT_BODY || 'Initial review request',
+              user_message: COMMENT_BODY || 'Initial review',
               copilot_response: response.substring(0, 2000),
-              method: method  // Track which method was used (sdk/acp/cli)
+              method: method
             });
-            
-            // Keep only last 20 interactions
             if (session.interactions.length > 20) {
               session.interactions = session.interactions.slice(-20);
             }
-            
-            // Save outputs
+
             fs.writeFileSync('/tmp/copilot_response.txt', response);
             fs.writeFileSync('/tmp/session_updated.json', JSON.stringify(session, null, 2));
-            
+
             console.log('\n' + '='.repeat(60));
-            console.log('[OK] Response generated via ' + method.toUpperCase());
+            console.log(`[OK] Response generated via ${method.toUpperCase()}`);
             console.log('='.repeat(60));
-            console.log(response.substring(0, 500) + '...');
           }
 
           main().catch(error => {
-            console.error('Fatal error:', error);
-            fs.writeFileSync('/tmp/copilot_response.txt', 
-              '[ERROR] An error occurred while processing your request: ' + error.message + '\n\nPlease try again by mentioning @copilot.');
+            console.error('[ERROR]', error);
+            fs.writeFileSync('/tmp/copilot_response.txt',
+              'An error occurred: ' + error.message + '\n\nPlease try @copilot again.');
             process.exit(1);
           });
           SCRIPT_EOF
 
-      - name: Run Copilot SDK/ACP agent
+      - name: Run Copilot ACP agent
         env:
-          # IMPORTANT: GH_TOKEN must be set to COPILOT_TOKEN for Copilot CLI auth
           GH_TOKEN: ${{ secrets.COPILOT_TOKEN }}
           PR_NUMBER: ${{ inputs.pr_number }}
           INTERACTION_TYPE: ${{ inputs.interaction_type }}
@@ -542,24 +384,20 @@ jobs:
           BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
         run: |
           cd $GITHUB_WORKSPACE
-          node /tmp/copilot-interactive-agent.js
+          node --experimental-vm-modules /tmp/copilot-acp-agent.mjs
 
       - name: Post response to PR
         run: |
           RESPONSE=$(cat /tmp/copilot_response.txt)
-          
-          # Escape for JSON
           RESPONSE_ESCAPED=$(echo "$RESPONSE" | jq -Rs .)
           
           if [ "${{ inputs.interaction_type }}" == "initial_review" ]; then
-            # Post as PR review
             curl -k -s -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}/reviews" \
               -d "{\"body\": $RESPONSE_ESCAPED, \"event\": \"COMMENT\"}"
           else
-            # Reply to the comment
             curl -k -s -X POST \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
@@ -570,7 +408,6 @@ jobs:
       - name: Update reaction to complete
         if: inputs.interaction_type != 'initial_review'
         run: |
-          # Add checkmark reaction to show completion
           curl -k -s -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -579,11 +416,9 @@ jobs:
 
       - name: Save session state
         run: |
-          # Save session to repo for persistence
           SESSION_FILE=".copilot-sessions/pr-${{ inputs.pr_number }}.json"
           SESSION_CONTENT=$(base64 -w 0 /tmp/session_updated.json)
           
-          # Check if file exists to get SHA
           EXISTING=$(curl -k -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -592,22 +427,20 @@ jobs:
           SHA=$(echo "$EXISTING" | jq -r '.sha // empty')
           
           if [ -n "$SHA" ]; then
-            # Update existing file
             curl -k -s -X PUT \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" \
-              -d "{\"message\": \"Update Copilot session for PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\", \"sha\": \"$SHA\"}"
+              -d "{\"message\": \"Update session PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\", \"sha\": \"$SHA\"}"
           else
-            # Create new file
             curl -k -s -X PUT \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" \
-              -d "{\"message\": \"Create Copilot session for PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\"}"
+              -d "{\"message\": \"Create session PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\"}"
           fi
 
-      - name: Remove copilot label (initial review only)
+      - name: Remove copilot label
         if: inputs.interaction_type == 'initial_review'
         run: |
           curl -k -s -X DELETE \
