@@ -1,0 +1,57 @@
+name: Copilot Documentation Generator
+
+on:
+  # Trigger on 'generate-docs' label
+  pull_request:
+    types: [labeled]
+  
+  # Trigger on issue with 'generate-docs' label
+  issues:
+    types: [labeled]
+  
+  # Trigger on push to main (update docs for changes)
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - '*.py'
+      - '*.js'
+      - '*.ts'
+      - '*.go'
+      - '*.java'
+
+jobs:
+  generate-docs-pr:
+    if: |
+      github.event_name == 'pull_request' && 
+      github.event.label.name == 'generate-docs'
+    uses: ./.github/workflows/copilot-doc-generator-master.yml
+    with:
+      trigger_type: 'pull_request'
+      pr_number: ${{ github.event.pull_request.number }}
+      issue_number: ''
+      auto_mode: false
+    secrets: inherit
+
+  generate-docs-issue:
+    if: |
+      github.event_name == 'issues' && 
+      github.event.label.name == 'generate-docs'
+    uses: ./.github/workflows/copilot-doc-generator-master.yml
+    with:
+      trigger_type: 'issue'
+      pr_number: ''
+      issue_number: ${{ github.event.issue.number }}
+      auto_mode: false
+    secrets: inherit
+
+  auto-update-docs:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/copilot-doc-generator-master.yml
+    with:
+      trigger_type: 'push'
+      pr_number: ''
+      issue_number: ''
+      auto_mode: true
+    secrets: inherit
