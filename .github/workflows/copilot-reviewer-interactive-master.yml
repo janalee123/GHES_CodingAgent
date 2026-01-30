@@ -1,0 +1,497 @@
+name: Copilot Interactive Reviewer (Master)
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      interaction_type:
+        required: true
+        type: string
+        description: 'initial_review, comment_reply, or review_comment_reply'
+      comment_id:
+        required: false
+        type: string
+        default: ''
+      comment_body:
+        required: false
+        type: string
+        default: ''
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  COPILOT_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+  NODE_TLS_REJECT_UNAUTHORIZED: '0'
+
+jobs:
+  interactive-review:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR details
+        id: pr
+        run: |
+          PR_DATA=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
+          
+          echo "title=$(echo "$PR_DATA" | jq -r '.title')" >> $GITHUB_OUTPUT
+          echo "body=$(echo "$PR_DATA" | jq -r '.body // empty')" >> $GITHUB_OUTPUT
+          echo "head_sha=$(echo "$PR_DATA" | jq -r '.head.sha')" >> $GITHUB_OUTPUT
+          echo "base_branch=$(echo "$PR_DATA" | jq -r '.base.ref')" >> $GITHUB_OUTPUT
+          echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
+          echo "author=$(echo "$PR_DATA" | jq -r '.user.login')" >> $GITHUB_OUTPUT
+
+      - name: Fetch PR diff
+        id: diff
+        run: |
+          DIFF=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
+          
+          # Save diff to file (may be large)
+          echo "$DIFF" > /tmp/pr_diff.txt
+          
+          # Get changed files list
+          FILES=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}/files" | \
+            jq -r '.[].filename' | head -50)
+          
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Load or create session context
+        id: session
+        run: |
+          SESSION_FILE=".copilot-sessions/pr-${{ inputs.pr_number }}.json"
+          
+          # Check if session file exists in repo
+          SESSION_DATA=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" 2>/dev/null || echo "{}")
+          
+          if echo "$SESSION_DATA" | jq -e '.content' > /dev/null 2>&1; then
+            echo "Found existing session"
+            echo "$SESSION_DATA" | jq -r '.content' | base64 -d > /tmp/session.json
+            echo "session_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "Creating new session"
+            echo '{"interactions":[],"context":{}}' > /tmp/session.json
+            echo "session_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fetch conversation history
+        id: history
+        run: |
+          # Get all comments on the PR for context
+          COMMENTS=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/comments" | \
+            jq '[.[] | {author: .user.login, body: .body, created_at: .created_at}]')
+          
+          # Get review comments
+          REVIEW_COMMENTS=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}/comments" | \
+            jq '[.[] | {author: .user.login, body: .body, path: .path, line: .line, created_at: .created_at}]')
+          
+          echo "$COMMENTS" > /tmp/pr_comments.json
+          echo "$REVIEW_COMMENTS" > /tmp/review_comments.json
+
+      - name: Acknowledge interaction
+        if: inputs.interaction_type != 'initial_review'
+        run: |
+          # Add a reaction to show we're processing
+          curl -k -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/comments/${{ inputs.comment_id }}/reactions" \
+            -d '{"content":"eyes"}'
+
+      - name: Setup Copilot agent script
+        run: |
+          cat > /tmp/copilot-interactive-agent.js << 'SCRIPT_EOF'
+          const { execSync, spawn } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+
+          // Configuration
+          const PR_NUMBER = process.env.PR_NUMBER;
+          const INTERACTION_TYPE = process.env.INTERACTION_TYPE;
+          const COMMENT_BODY = process.env.COMMENT_BODY || '';
+          const PR_TITLE = process.env.PR_TITLE;
+          const PR_BODY = process.env.PR_BODY || '';
+          const PR_AUTHOR = process.env.PR_AUTHOR;
+          const CHANGED_FILES = process.env.CHANGED_FILES || '';
+          const HEAD_BRANCH = process.env.HEAD_BRANCH;
+          const BASE_BRANCH = process.env.BASE_BRANCH;
+
+          // Load context
+          const diff = fs.readFileSync('/tmp/pr_diff.txt', 'utf8');
+          const prComments = JSON.parse(fs.readFileSync('/tmp/pr_comments.json', 'utf8'));
+          const reviewComments = JSON.parse(fs.readFileSync('/tmp/review_comments.json', 'utf8'));
+          const session = JSON.parse(fs.readFileSync('/tmp/session.json', 'utf8'));
+
+          // Build conversation history for context
+          function buildConversationContext() {
+            let context = '';
+            
+            // Add previous interactions from session
+            if (session.interactions && session.interactions.length > 0) {
+              context += '\n## Previous Interactions in this PR:\n';
+              session.interactions.slice(-5).forEach((interaction, i) => {
+                context += `\n### Interaction ${i + 1} (${interaction.type}):\n`;
+                context += `User: ${interaction.user_message}\n`;
+                context += `Copilot: ${interaction.copilot_response.substring(0, 500)}...\n`;
+              });
+            }
+            
+            // Add recent comments for context
+            if (prComments.length > 0) {
+              context += '\n## Recent PR Comments:\n';
+              prComments.slice(-10).forEach(comment => {
+                context += `- @${comment.author}: ${comment.body.substring(0, 200)}\n`;
+              });
+            }
+            
+            return context;
+          }
+
+          // Build the appropriate prompt based on interaction type
+          function buildPrompt() {
+            const conversationContext = buildConversationContext();
+            
+            let prompt = '';
+            
+            switch (INTERACTION_TYPE) {
+              case 'initial_review':
+                prompt = `You are an expert code reviewer helping with PR #${PR_NUMBER}.
+
+          ## PR Information
+          - **Title**: ${PR_TITLE}
+          - **Author**: @${PR_AUTHOR}
+          - **Branch**: ${HEAD_BRANCH} → ${BASE_BRANCH}
+          - **Description**: ${PR_BODY}
+
+          ## Changed Files
+          ${CHANGED_FILES}
+
+          ## Code Diff
+          \`\`\`diff
+          ${diff.substring(0, 15000)}
+          \`\`\`
+
+          ## Instructions
+          Please provide a thorough code review:
+          1. **Summary**: Brief overview of changes
+          2. **Strengths**: What's done well
+          3. **Suggestions**: Improvements with specific file/line references
+          4. **Questions**: Clarifications needed from the author
+          5. **Security/Performance**: Any concerns
+
+          End your review by mentioning that the author can ask follow-up questions by mentioning @copilot in comments.`;
+                break;
+                
+              case 'comment_reply':
+              case 'review_comment_reply':
+                // Extract the actual question (remove @copilot mention)
+                const userQuestion = COMMENT_BODY.replace(/@copilot/gi, '').trim();
+                
+                prompt = `You are an expert code reviewer continuing a conversation about PR #${PR_NUMBER}.
+
+          ## PR Context
+          - **Title**: ${PR_TITLE}
+          - **Author**: @${PR_AUTHOR}
+          - **Branch**: ${HEAD_BRANCH} → ${BASE_BRANCH}
+
+          ## Changed Files
+          ${CHANGED_FILES}
+
+          ## Code Diff (for reference)
+          \`\`\`diff
+          ${diff.substring(0, 10000)}
+          \`\`\`
+
+          ${conversationContext}
+
+          ## Current Question from Developer
+          "${userQuestion}"
+
+          ## Instructions
+          Please respond helpfully to the developer's question. You have full context of the PR and previous conversations.
+          - Be specific and reference code/files when relevant
+          - If asked to explain code, provide clear explanations
+          - If asked for alternatives, provide concrete examples
+          - If asked to make changes, describe what should be modified
+          - Keep your response focused and actionable
+          - Remind them they can continue asking questions with @copilot`;
+                break;
+                
+              default:
+                prompt = `Respond to this interaction about PR #${PR_NUMBER}: ${COMMENT_BODY}`;
+            }
+            
+            return prompt;
+          }
+
+          // Run Copilot with ACP mode
+          async function runCopilotACP(prompt) {
+            return new Promise((resolve, reject) => {
+              // Start Copilot in ACP mode
+              const copilot = spawn('copilot', ['--acp'], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                env: { ...process.env }
+              });
+              
+              let response = '';
+              let errorOutput = '';
+              
+              copilot.stdout.on('data', (data) => {
+                const text = data.toString();
+                response += text;
+                process.stdout.write(text); // Stream to logs
+              });
+              
+              copilot.stderr.on('data', (data) => {
+                errorOutput += data.toString();
+              });
+              
+              copilot.on('close', (code) => {
+                if (code === 0 || response.length > 0) {
+                  resolve(response);
+                } else {
+                  reject(new Error(`Copilot exited with code ${code}: ${errorOutput}`));
+                }
+              });
+              
+              // Send ACP initialize and prompt
+              const initMessage = JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'initialize',
+                params: {
+                  capabilities: {},
+                  clientInfo: { name: 'ghes-interactive-reviewer', version: '1.0.0' }
+                }
+              }) + '\n';
+              
+              const promptMessage = JSON.stringify({
+                jsonrpc: '2.0',
+                id: 2,
+                method: 'agent/run',
+                params: {
+                  prompt: prompt,
+                  workingDirectory: process.cwd(),
+                  options: {
+                    allowTools: ['file_read', 'grep', 'glob'],
+                    disallowTools: ['file_write', 'terminal', 'git_commit']
+                  }
+                }
+              }) + '\n';
+              
+              copilot.stdin.write(initMessage);
+              setTimeout(() => {
+                copilot.stdin.write(promptMessage);
+                copilot.stdin.end();
+              }, 100);
+              
+              // Timeout after 5 minutes
+              setTimeout(() => {
+                copilot.kill();
+                if (response.length > 0) {
+                  resolve(response);
+                } else {
+                  reject(new Error('Copilot timed out'));
+                }
+              }, 300000);
+            });
+          }
+
+          // Fallback to standard CLI mode
+          async function runCopilotCLI(prompt) {
+            const promptFile = '/tmp/copilot_prompt.txt';
+            fs.writeFileSync(promptFile, prompt);
+            
+            try {
+              const result = execSync(`copilot -p "$(cat ${promptFile})" --no-interactive 2>&1`, {
+                encoding: 'utf8',
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 300000
+              });
+              return result;
+            } catch (error) {
+              console.error('CLI Error:', error.message);
+              return error.stdout || 'Unable to generate response. Please try again.';
+            }
+          }
+
+          // Main execution
+          async function main() {
+            const prompt = buildPrompt();
+            console.log('=== Prompt ===');
+            console.log(prompt.substring(0, 1000) + '...');
+            console.log('=== Running Copilot ===');
+            
+            let response;
+            try {
+              // Try ACP mode first
+              response = await runCopilotACP(prompt);
+            } catch (error) {
+              console.log('ACP mode failed, falling back to CLI:', error.message);
+              response = await runCopilotCLI(prompt);
+            }
+            
+            // Parse ACP response if needed
+            if (response.includes('"jsonrpc"')) {
+              try {
+                const lines = response.split('\n').filter(l => l.trim());
+                for (const line of lines) {
+                  const parsed = JSON.parse(line);
+                  if (parsed.result && parsed.result.content) {
+                    response = parsed.result.content;
+                    break;
+                  }
+                  if (parsed.params && parsed.params.content) {
+                    response = parsed.params.content;
+                    break;
+                  }
+                }
+              } catch (e) {
+                // Keep original response if parsing fails
+              }
+            }
+            
+            // Clean up response
+            response = response.trim();
+            if (!response) {
+              response = 'I was unable to generate a response. Please try again or rephrase your question.';
+            }
+            
+            // Update session with this interaction
+            session.interactions = session.interactions || [];
+            session.interactions.push({
+              type: INTERACTION_TYPE,
+              timestamp: new Date().toISOString(),
+              user_message: COMMENT_BODY || 'Initial review request',
+              copilot_response: response.substring(0, 2000)
+            });
+            
+            // Keep only last 20 interactions
+            if (session.interactions.length > 20) {
+              session.interactions = session.interactions.slice(-20);
+            }
+            
+            // Save outputs
+            fs.writeFileSync('/tmp/copilot_response.txt', response);
+            fs.writeFileSync('/tmp/session_updated.json', JSON.stringify(session, null, 2));
+            
+            console.log('=== Response ===');
+            console.log(response);
+          }
+
+          main().catch(error => {
+            console.error('Fatal error:', error);
+            fs.writeFileSync('/tmp/copilot_response.txt', 
+              `⚠️ An error occurred while processing your request: ${error.message}\n\nPlease try again by mentioning @copilot.`);
+            process.exit(1);
+          });
+          SCRIPT_EOF
+
+      - name: Run Copilot interactive agent
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          INTERACTION_TYPE: ${{ inputs.interaction_type }}
+          COMMENT_BODY: ${{ inputs.comment_body }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
+          CHANGED_FILES: ${{ steps.diff.outputs.files }}
+          HEAD_BRANCH: ${{ steps.pr.outputs.head_branch }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+        run: |
+          cd $GITHUB_WORKSPACE
+          node /tmp/copilot-interactive-agent.js
+
+      - name: Post response to PR
+        run: |
+          RESPONSE=$(cat /tmp/copilot_response.txt)
+          
+          # Escape for JSON
+          RESPONSE_ESCAPED=$(echo "$RESPONSE" | jq -Rs .)
+          
+          if [ "${{ inputs.interaction_type }}" == "initial_review" ]; then
+            # Post as PR review
+            curl -k -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}/reviews" \
+              -d "{\"body\": $RESPONSE_ESCAPED, \"event\": \"COMMENT\"}"
+          else
+            # Reply to the comment
+            curl -k -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/comments" \
+              -d "{\"body\": $RESPONSE_ESCAPED}"
+          fi
+
+      - name: Update reaction to complete
+        if: inputs.interaction_type != 'initial_review'
+        run: |
+          # Add checkmark reaction to show completion
+          curl -k -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/comments/${{ inputs.comment_id }}/reactions" \
+            -d '{"content":"rocket"}'
+
+      - name: Save session state
+        run: |
+          # Save session to repo for persistence
+          SESSION_FILE=".copilot-sessions/pr-${{ inputs.pr_number }}.json"
+          SESSION_CONTENT=$(base64 -w 0 /tmp/session_updated.json)
+          
+          # Check if file exists to get SHA
+          EXISTING=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" 2>/dev/null || echo "{}")
+          
+          SHA=$(echo "$EXISTING" | jq -r '.sha // empty')
+          
+          if [ -n "$SHA" ]; then
+            # Update existing file
+            curl -k -s -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" \
+              -d "{\"message\": \"Update Copilot session for PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\", \"sha\": \"$SHA\"}"
+          else
+            # Create new file
+            curl -k -s -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" \
+              -d "{\"message\": \"Create Copilot session for PR #${{ inputs.pr_number }}\", \"content\": \"$SESSION_CONTENT\"}"
+          fi
+
+      - name: Remove copilot label (initial review only)
+        if: inputs.interaction_type == 'initial_review'
+        run: |
+          curl -k -s -X DELETE \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.pr_number }}/labels/copilot" || true
