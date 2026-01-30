@@ -1,0 +1,97 @@
+name: Cleanup Copilot Sessions
+
+on:
+  # Run when PRs are closed/merged
+  pull_request:
+    types: [closed]
+  
+  # Also run weekly to clean old sessions
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at midnight
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+jobs:
+  cleanup-pr-session:
+    if: github.event_name == 'pull_request'
+    runs-on: self-hosted
+    steps:
+      - name: Delete session file for closed PR
+        run: |
+          SESSION_FILE=".copilot-sessions/pr-${{ github.event.pull_request.number }}.json"
+          
+          # Get file SHA
+          EXISTING=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" 2>/dev/null || echo "{}")
+          
+          SHA=$(echo "$EXISTING" | jq -r '.sha // empty')
+          
+          if [ -n "$SHA" ]; then
+            curl -k -s -X DELETE \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/$SESSION_FILE" \
+              -d "{\"message\": \"Cleanup Copilot session for closed PR #${{ github.event.pull_request.number }}\", \"sha\": \"$SHA\"}"
+            echo "Deleted session for PR #${{ github.event.pull_request.number }}"
+          else
+            echo "No session found for PR #${{ github.event.pull_request.number }}"
+          fi
+
+  cleanup-stale-sessions:
+    if: github.event_name == 'schedule'
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Find and clean stale sessions
+        run: |
+          echo "Checking for stale Copilot sessions..."
+          
+          # List all session files
+          SESSIONS=$(curl -k -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/.copilot-sessions" 2>/dev/null | \
+            jq -r '.[]? | select(.name | endswith(".json")) | .name' || echo "")
+          
+          if [ -z "$SESSIONS" ]; then
+            echo "No session files found"
+            exit 0
+          fi
+          
+          for SESSION_FILE in $SESSIONS; do
+            # Extract PR number from filename (pr-123.json -> 123)
+            PR_NUM=$(echo "$SESSION_FILE" | sed 's/pr-\([0-9]*\)\.json/\1/')
+            
+            # Check if PR is still open
+            PR_STATE=$(curl -k -s \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM" | \
+              jq -r '.state // "unknown"')
+            
+            if [ "$PR_STATE" != "open" ]; then
+              echo "PR #$PR_NUM is $PR_STATE, removing session..."
+              
+              # Get SHA and delete
+              SHA=$(curl -k -s \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/.copilot-sessions/$SESSION_FILE" | \
+                jq -r '.sha // empty')
+              
+              if [ -n "$SHA" ]; then
+                curl -k -s -X DELETE \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/contents/.copilot-sessions/$SESSION_FILE" \
+                  -d "{\"message\": \"Cleanup stale Copilot session for PR #$PR_NUM\", \"sha\": \"$SHA\"}"
+              fi
+            else
+              echo "PR #$PR_NUM is still open, keeping session"
+            fi
+          done
