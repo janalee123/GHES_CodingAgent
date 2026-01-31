@@ -227,6 +227,16 @@ jobs:
             fi
           done
 
+          # Exclude log files and cache directories
+          git reset HEAD 'logs/' 2>/dev/null || true
+          git reset HEAD '*.log' 2>/dev/null || true
+          git reset HEAD '__pycache__/' 2>/dev/null || true
+          git reset HEAD '**/__pycache__/' 2>/dev/null || true
+          git reset HEAD '*.pyc' 2>/dev/null || true
+          git reset HEAD '**/*.pyc' 2>/dev/null || true
+          git reset HEAD 'node_modules/' 2>/dev/null || true
+          git reset HEAD '.env' 2>/dev/null || true
+
           # Check if there are any staged changes
           if ! git diff --cached --quiet; then
             echo " Changes staged for commit"
