@@ -1,24 +1,19 @@
 name: Copilot Interactive Reviewer
 
 on:
-  # Initial review when label is added
   pull_request:
     types: [labeled]
-  
-  # Respond to @copilot mentions in PR comments
   issue_comment:
     types: [created]
-  
-  # Respond to @copilot mentions in review comments
-  pull_request_review_comment:
-    types: [created]
+
+# Prevent multiple runs on the same PR
+concurrency:
+  group: copilot-pr-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  # Initial PR review when 'copilot' label is added
-  initial-review:
-    if: |
-      github.event_name == 'pull_request' && 
-      github.event.label.name == 'copilot'
+  label-review:
+    if: github.event_name == 'pull_request' && github.event.label.name == 'copilot'
     uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
     with:
       pr_number: ${{ github.event.pull_request.number }}
@@ -27,29 +22,17 @@ jobs:
       comment_body: ''
     secrets: inherit
 
-  # Respond to @copilot mentions in PR comments
-  respond-to-comment:
+  comment-review:
     if: |
-      github.event_name == 'issue_comment' && 
+      github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
-      contains(github.event.comment.body, '@copilot')
+      contains(github.event.comment.body, '@copilot') &&
+      github.event.comment.user.login != 'copilot-agent' &&
+      github.event.comment.user.login != 'github-actions[bot]'
     uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
     with:
       pr_number: ${{ github.event.issue.number }}
       interaction_type: 'comment_reply'
-      comment_id: ${{ github.event.comment.id }}
-      comment_body: ${{ github.event.comment.body }}
-    secrets: inherit
-
-  # Respond to @copilot mentions in review comments
-  respond-to-review-comment:
-    if: |
-      github.event_name == 'pull_request_review_comment' &&
-      contains(github.event.comment.body, '@copilot')
-    uses: ./.github/workflows/copilot-reviewer-interactive-master.yml
-    with:
-      pr_number: ${{ github.event.pull_request.number }}
-      interaction_type: 'review_comment_reply'
       comment_id: ${{ github.event.comment.id }}
       comment_body: ${{ github.event.comment.body }}
     secrets: inherit
