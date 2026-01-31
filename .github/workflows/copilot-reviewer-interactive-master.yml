@@ -181,8 +181,8 @@ jobs:
 
           End your review by mentioning that the author can ask follow-up questions by mentioning @copilot in comments."
           else
-            # Extract question (remove @copilot mentions)
-            USER_QUESTION=$(echo "$COMMENT_BODY" | sed 's/@copilot[-a-zA-Z0-9]*//gi' | xargs)
+            # Extract question (remove @copilot mentions) - use sed for trim instead of xargs to handle quotes
+            USER_QUESTION=$(echo "$COMMENT_BODY" | sed 's/@copilot[-a-zA-Z0-9]*//gi' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             
             PROMPT="You are continuing a code review conversation for PR #${PR_NUMBER}.
 
