@@ -41,7 +41,10 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
           
-          echo "title=$(echo "$PR_DATA" | jq -r '.title')" >> $GITHUB_OUTPUT
+          # Use heredoc for title to handle special characters
+          echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
+          echo "$PR_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
+          echo "EOFTITLE" >> $GITHUB_OUTPUT
           echo "head_sha=$(echo "$PR_DATA" | jq -r '.head.sha')" >> $GITHUB_OUTPUT
           echo "base_branch=$(echo "$PR_DATA" | jq -r '.base.ref')" >> $GITHUB_OUTPUT
           echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
