@@ -51,9 +51,9 @@ jobs:
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
             
             # Use heredoc for title to handle special characters
-          echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
-          echo "$PR_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
-          echo "EOFTITLE" >> $GITHUB_OUTPUT
+            echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
+            echo "$PR_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
+            echo "EOFTITLE" >> $GITHUB_OUTPUT
             echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
             
           elif [ "${{ inputs.trigger_type }}" == "issue" ]; then
@@ -64,8 +64,8 @@ jobs:
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}")
             
             echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
-          echo "$ISSUE_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
-          echo "EOFTITLE" >> $GITHUB_OUTPUT
+            echo "$ISSUE_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
+            echo "EOFTITLE" >> $GITHUB_OUTPUT
             
             BODY=$(echo "$ISSUE_DATA" | jq -r '.body // empty')
             FILES=$(echo "$BODY" | grep -oP '(?<=Files?:\s*)[^\n]+' | tr ',' '\n' | tr -d ' ' | head -30)
