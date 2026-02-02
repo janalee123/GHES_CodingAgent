@@ -40,9 +40,9 @@ jobs:
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls/${{ inputs.pr_number }}")
           
           # Use heredoc for title to handle special characters
-          echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
-          echo "$PR_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
-          echo "EOFTITLE" >> $GITHUB_OUTPUT
+            echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
+            echo "$PR_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
+            echo "EOFTITLE" >> $GITHUB_OUTPUT
           echo "body=$(echo "$PR_DATA" | jq -r '.body // empty')" >> $GITHUB_OUTPUT
           echo "head_branch=$(echo "$PR_DATA" | jq -r '.head.ref')" >> $GITHUB_OUTPUT
           echo "base_branch=$(echo "$PR_DATA" | jq -r '.base.ref')" >> $GITHUB_OUTPUT
@@ -78,8 +78,8 @@ jobs:
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/${{ inputs.issue_number }}")
           
           echo "title<<EOFTITLE" >> $GITHUB_OUTPUT
-          echo "$ISSUE_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
-          echo "EOFTITLE" >> $GITHUB_OUTPUT
+            echo "$ISSUE_DATA" | jq -r '.title' >> $GITHUB_OUTPUT
+            echo "EOFTITLE" >> $GITHUB_OUTPUT
           echo "body=$(echo "$ISSUE_DATA" | jq -r '.body // empty')" >> $GITHUB_OUTPUT
           
           # Parse file paths from issue body (expecting format like "Files: path/to/file.js, another/file.py")
