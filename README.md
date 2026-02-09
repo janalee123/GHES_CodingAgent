@@ -1,4 +1,4 @@
-# 🤖 GitHub Copilot Coder for GHES V1
+# 🤖 GitHub Copilot Coder for GHES
 
 > **Automated code generation powered by GitHub Copilot CLI on GitHub Enterprise Server**
 
