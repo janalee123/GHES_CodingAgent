@@ -1,241 +1,420 @@
-# =============================================================================
-# GitHub Copilot Coder (GHE.com) - Master Workflow
-# =============================================================================
-# This workflow is designed to use the GHE_COPILOT_TOKEN secret with GHE.com
-# instance (Enterprise Cloud with data residency).
-# 
-# Trigger by adding 'ghe-copilot' label to an issue.
-# =============================================================================
-name: GitHub Copilot Coder (GHE.com) - Master
+name:  GitHub Copilot Coder GHE.com (Master)
 
-on: 
+# This is a reusable workflow that can be called from other repositories.
+# It contains the full implementation logic for the Copilot Coder using GHE.com token.
+#
+# To use this workflow from another repository, create a caller workflow:
+#   jobs:
+#     copilot:
+#       uses: <org>/GHES_CodingAgent/.github/workflows/ghe-copilot-coder-master.yml@main
+#       secrets: inherit
+
+on:
+  # Reusable workflow trigger only (called from ghe-copilot-coder.yml)
   workflow_call:
-
-defaults:
-  run:
-    shell: bash
+    secrets:
+      GH_TOKEN:
+        description: 'Classic PAT with repo and workflow scopes'
+        required: true
+      GHE_COPILOT_TOKEN:
+        description: 'Token for GitHub Copilot API access (GHE.com)'
+        required: true
+      CONTEXT7_API_KEY:
+        description: 'API key for Context7 documentation service'
+        required: false
 
 jobs:
-  copilot-coder:
+  copilot-cli:
+    # Only run when the issue has the 'ghe-copilot' label
     if: contains(github.event.issue.labels.*.name, 'ghe-copilot')
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
+    runs-on: self-hosted
+
     permissions:
       contents: write
       issues: write
       pull-requests: write
 
+    env:
+      MODEL: gpt-5
+      # Extract hostname from server URL (removes https:// prefix)
+      GHES_HOSTNAME: ${{ github.server_url }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+      ISSUE_BODY: ${{ github.event.issue.body }}
+      ISSUE_ASSIGNEE: ${{ github.event.issue.assignee.login }}
+      ISSUE_CREATOR: ${{ github.event.issue.user.login }}
+      REPO_NAME: ${{ github.repository }}
+      BRANCH_NAME: copilot/${{ github.event.issue.number }}
+
     steps:
-      - name: Checkout repository
+      - name:  Start Workflow
+        run: |
+          echo " GitHub Copilot Coder (GHE.com) workflow started!"
+          echo ""
+          echo " Issue: #${ISSUE_NUMBER}"
+          echo " Title: ${ISSUE_TITLE}"
+          echo " Creator: ${ISSUE_CREATOR}"
+          echo " Repository: ${REPO_NAME}"
+          echo " Branch: ${BRANCH_NAME}"
+          echo ""
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_CREATOR: ${{ github.event.issue.user.login }}
+          REPO_NAME: ${{ github.repository }}
+          BRANCH_NAME: copilot/${{ github.event.issue.number }}
+
+      - name:  Verify Pre-installed Tools
+        run: |
+          echo " Checking pre-installed tools on runner..."
+          echo ""
+          echo " Node.js:"
+          node --version
+          echo ""
+          echo " Copilot CLI:"
+          copilot --version
+          echo ""
+          echo " Python:"
+          python3 --version
+          echo ""
+          echo " All tools verified!"
+
+      - name:  Configure Git Credentials for GHES
+        run: |
+          # Extract hostname from server URL (remove https:// prefix)
+          GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
+          echo "GHES_HOST=${GHES_HOST}" >> $GITHUB_ENV
+
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.GH_TOKEN }}@${GHES_HOST}" >> ~/.git-credentials
+          chmod 600 ~/.git-credentials
+          echo " Git credentials configured for GHES (${GHES_HOST})"
+
+      - name:  Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
 
-      - name: Set environment from issue
+      - name:  Configure GitHub CLI for GHES
         run: |
-          echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-          echo "ISSUE_URL=${{ github.event.issue.html_url }}" >> $GITHUB_ENV
-          echo "ISSUE_TITLE=$(echo '${{ github.event.issue.title }}' | sed 's/"/\\"/g')" >> $GITHUB_ENV
-          
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Configure gh to use GHES instance (GHES_HOST set in previous step)
+          gh auth login --hostname "${GHES_HOST}" --with-token <<< "${{ secrets.GH_TOKEN }}"
+          gh auth status --hostname "${GHES_HOST}"
+          echo " GitHub CLI configured for GHES (${GHES_HOST})"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Configure gh CLI
+      - name:  Update Issue Labels - In Progress
         run: |
-          echo "${{ secrets.GH_TOKEN }}" | gh auth login --hostname github.janaleetest.com --with-token
+          gh issue edit ${{ env.ISSUE_NUMBER }} \
+            --add-label "in-progress" \
+            --remove-label "ghe-copilot"
 
-      - name: Check authentication
-        run: gh auth status --hostname github.janaleetest.com
+          # Add comment to notify that Copilot is working on this issue
+          COMMENT="##  Copilot (GHE.com) is on it!
 
-      - name: Create branch for copilot changes
+          Copilot has been assigned to work on this issue using GHE.com authentication. You can view progress under [GitHub Actions](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), and once completed a PR will be linked here."
+          gh issue comment "${{ env.ISSUE_NUMBER }}" --body "${COMMENT}"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name:  Configure MCP Servers
         run: |
-          BRANCH="copilot-issue-${{ env.ISSUE_NUMBER }}"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-          
-          if git show-ref --verify --quiet refs/remotes/origin/$BRANCH; then
-            echo "Branch $BRANCH already exists, checking out..."
-            git checkout $BRANCH
-            git pull origin $BRANCH
+          mkdir -p ~/.config
+
+          # Fetch mcp-config.json from the central GHES_CodingAgent repository
+          echo " Fetching MCP configuration from GHES_CodingAgent..."
+          GHES_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||')
+          OWNER="${{ github.repository_owner }}"
+
+          # Determine API base URL
+          if [[ "$GHES_HOST" == "github.com" ]]; then
+              API_BASE="https://api.github.com"
           else
-            echo "Creating new branch $BRANCH..."
-            git checkout -b $BRANCH
+              API_BASE="https://$GHES_HOST/api/v3"
           fi
 
-      - name: Run Copilot CLI
-        id: copilot-run
-        continue-on-error: true
+          # Download mcp-config.json from GHES_CodingAgent repo
+          curl -s \
+              -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3.raw" \
+              "$API_BASE/repos/$OWNER/GHES_CodingAgent/contents/mcp-config.json" \
+              > ~/.config/mcp-config.json
+
+          if [ -s ~/.config/mcp-config.json ]; then
+              echo " MCP configuration downloaded to ~/.config/mcp-config.json"
+              cat ~/.config/mcp-config.json
+          else
+              echo " Failed to download MCP configuration"
+              exit 1
+          fi
+
+      - name:  Check MCP Access
+        run: |
+          echo " Verifying MCP server access..."
+          copilot -p "List tools defined in the current chat session (do not run commands, I am asking about tools defined in the LLM). Just the names in a table, nothing else." --allow-all-tools
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GHE_COPILOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHE_COPILOT_TOKEN }}
           GH_HOST: e2e-enterprise.ghe.com
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+
+      - name:  Create Feature Branch
         run: |
-          set +e
+          echo " Creating feature branch..."
+          git config user.name "copilot-agent[bot]"
+          git config user.email "copilot-agent[bot]@users.noreply.github.com"
+          git checkout -b ${{ env.BRANCH_NAME }}
+          echo " Branch ${{ env.BRANCH_NAME }} created"
 
-          # Exclude binary, image, font, and large asset files from context
-          EXCLUDE_PATTERN="**/*.{png,jpg,jpeg,gif,svg,ico,webp,mp4,mp3,wav,ogg,pdf,zip,tar,gz,rar,7z,exe,dll,so,dylib,bin,woff,woff2,ttf,eot,otf,lock}"
-
-          echo "Running Copilot CLI on issue #${{ env.ISSUE_NUMBER }}..."
-          echo "Issue Title: ${{ env.ISSUE_TITLE }}"
-          
-          OUTPUT=$(copilot -p "$(cat <<EOF
-          You are a helpful AI coding assistant. A GitHub issue has been assigned to you.
-          
-          **Issue #${{ env.ISSUE_NUMBER }}**: ${{ env.ISSUE_TITLE }}
-          
-          **Issue URL**: ${{ env.ISSUE_URL }}
-          
-          Please read the full issue body and any comments from the GitHub API, then implement the requested changes.
-          
-          Guidelines:
-          1. If the issue is a bug fix, identify and fix the root cause
-          2. If the issue is a feature request, implement it following existing code patterns
-          3. If the issue is a question, provide a helpful response
-          4. Write clean, well-documented code
-          5. Follow the existing code style and conventions
-          6. Update or add tests if applicable
-          7. Update documentation if needed
-          8. IMPORTANT: Focus only on what the issue specifically asks for
-          9. IMPORTANT: Do NOT make changes outside the scope of the issue
-          
-          After analyzing the issue, make the necessary code changes.
-          EOF
-          )" --add-dir . --allow-all-tools 2>&1)
-          
-          EXIT_CODE=$?
-          echo "$OUTPUT"
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "copilot_failed=true" >> $GITHUB_OUTPUT
-            echo "copilot_error<<ERREOF" >> $GITHUB_OUTPUT
-            echo "$OUTPUT" >> $GITHUB_OUTPUT
-            echo "ERREOF" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          
-          echo "copilot_failed=false" >> $GITHUB_OUTPUT
-
-      - name: Commit changes
-        id: commit
-        if: steps.copilot-run.outputs.copilot_failed != 'true'
+      - name:  Implement Changes with Copilot
+        timeout-minutes: 30
+        working-directory: ${{ github.workspace }}
         run: |
-          git add -A
-          
-          if git diff --staged --quiet; then
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "No changes to commit"
+          echo " Running GitHub Copilot CLI (GHE.com)..."
+          echo ""
+          echo " Issue: #${ISSUE_NUMBER}"
+          echo " Title: ${ISSUE_TITLE}"
+          echo " Working Directory: $(pwd)"
+          echo ""
+
+          echo "This is the description that Copilot CLI is going to use to implement the task:"
+          echo "${ISSUE_BODY}"
+
+          mkdir -p logs
+
+          # Save issue body to file to avoid injection
+          printf '%s' "${ISSUE_BODY}" > /tmp/issue_description.txt
+
+          # Run Copilot with file input
+          # Note: -p flag runs in non-interactive mode
+          # --add-dir allows Copilot to access files in the workspace directory
+          copilot -p "Implement the GitHub issue following the description details: $(cat /tmp/issue_description.txt)" \
+            --add-dir "$(pwd)" \
+            --allow-all-tools \
+            --log-level all \
+            --log-dir logs
+
+
+          # Clean up
+          rm -f /tmp/issue_description.txt
+
+          echo " Implementation completed"
+        env:
+          GH_TOKEN: ${{ secrets.GHE_COPILOT_TOKEN }}
+          GH_HOST: e2e-enterprise.ghe.com
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          MODEL: ${{ env.MODEL }}
+
+      - name:  Commit Changes
+        run: |
+          echo " Preparing commit..."
+
+          # Co-author info from issue creator
+          CREATOR_NAME="${ISSUE_CREATOR}"
+          CREATOR_EMAIL="${ISSUE_CREATOR}@users.noreply.github.com"
+          echo " Co-author: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
+
+          # Add all files except metadata files
+          git add .
+
+          # Exclude metadata files from commit
+          for file in copilot-summary.md commit-message.md .final-commit-msg.txt .github/copilot-instructions.md; do
+            if git ls-files --cached "$file" > /dev/null 2>&1; then
+              git reset HEAD "$file" 2>/dev/null || true
+            fi
+          done
+
+          # Exclude log files and cache directories
+          git reset HEAD 'logs/' 2>/dev/null || true
+          git reset HEAD '*.log' 2>/dev/null || true
+          git reset HEAD '__pycache__/' 2>/dev/null || true
+          git reset HEAD '**/__pycache__/' 2>/dev/null || true
+          git reset HEAD '*.pyc' 2>/dev/null || true
+          git reset HEAD '**/*.pyc' 2>/dev/null || true
+          git reset HEAD 'node_modules/' 2>/dev/null || true
+          git reset HEAD '.env' 2>/dev/null || true
+
+          # Check if there are any staged changes
+          if ! git diff --cached --quiet; then
+            echo " Changes staged for commit"
           else
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            git commit -m "feat: implement changes for issue #${{ env.ISSUE_NUMBER }}" \
-                      -m "Automated changes by GitHub Copilot (GHE.com)" \
-                      -m "Resolves: ${{ env.ISSUE_URL }}"
+            echo " No changes staged for commit"
           fi
 
-      - name: Push changes
-        if: steps.commit.outputs.has_changes == 'true'
-        run: |
-          git push origin ${{ env.BRANCH }} --force-with-lease
+          # Prepare final commit message with co-author
+          if [ -f "commit-message.md" ]; then
+            echo " Using Copilot-generated commit message"
+            {
+              cat commit-message.md
+              echo ""
+              echo ""
+              echo "Co-authored-by: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
+            } > .final-commit-msg.txt
+          else
+            echo " commit-message.md not found, using default message"
+            {
+              echo " [AI-Generated] feat: Implement issue ${ISSUE_NUMBER}"
+              echo ""
+              echo "${ISSUE_TITLE}"
+              echo ""
+              echo "Changes implemented by GitHub Copilot CLI (GHE.com)"
+              echo ""
+              echo "Co-authored-by: ${CREATOR_NAME} <${CREATOR_EMAIL}>"
+            } > .final-commit-msg.txt
+          fi
 
-      - name: Create or update pull request
+          # Create commit if there are staged changes
+          if git diff --cached --quiet; then
+            echo " No staged changes to commit, skipping git commit"
+          else
+            git commit -F .final-commit-msg.txt
+            echo " Changes committed successfully"
+          fi
+
+          # Clean up
+          rm -f .final-commit-msg.txt
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_CREATOR: ${{ github.event.issue.user.login }}
+
+      - name:  Push Branch
+        run: |
+          echo " Pushing branch to remote..."
+
+          # Set remote URL with token for push (git-credentials should handle this but being explicit)
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@${GHES_HOST}/${{ github.repository }}.git"
+
+          # Debug: show what we're doing
+          echo "Remote URL set for: ${GHES_HOST}/${{ github.repository }}"
+
+          # Disable SSL verification for self-signed cert
+          git config --global http.sslVerify false
+
+          git push -u --force origin "${{ env.BRANCH_NAME }}"
+          echo " Branch pushed successfully"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GHES_HOST: ${{ env.GHES_HOST }}
+
+      - name:  Create Pull Request
         id: create-pr
-        if: steps.commit.outputs.has_changes == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          # Check if PR already exists
-          EXISTING_PR=$(gh pr list --head "${{ env.BRANCH }}" --json number --jq '.[0].number')
-          
-          if [ -n "$EXISTING_PR" ]; then
-            echo "PR #$EXISTING_PR already exists, updating..."
-            echo "pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+          # Generate detailed PR body with change summary
+          CHANGED_FILES=$(git diff --name-only main...HEAD 2>/dev/null | head -20)
+          FILE_STATS=$(git diff --stat main...HEAD 2>/dev/null | tail -1)
+          DIFF_PREVIEW=$(git diff main...HEAD --stat 2>/dev/null | head -30)
+
+          # Check if copilot-summary.md exists (generated by Copilot CLI)
+          if [ -f "copilot-summary.md" ]; then
+            PR_BODY=$(cat copilot-summary.md)
           else
-            echo "Creating pull request..."
-            PR_URL=$(gh pr create \
-              --title "Copilot (GHE.com): ${{ env.ISSUE_TITLE }}" \
-              --body "## Summary
-          
-          Automated changes generated by GitHub Copilot (GHE.com) to address issue #${{ env.ISSUE_NUMBER }}.
-          
-          ## Related Issue
-          
-          Closes #${{ env.ISSUE_NUMBER }}
-          
-          ## Changes
-          
-          Please review the changes made by Copilot and ensure they meet the requirements.
-          
+            # Generate detailed summary
+            PR_BODY="##  Summary
+          Automated implementation for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}
+
+          This PR was automatically generated by GitHub Copilot Agent (GHE.com) to address the requirements specified in the linked issue.
+
+          ##  Modified Files
+          \`\`\`
+          ${DIFF_PREVIEW}
+          \`\`\`
+
+          ##  Implementation Details
+          ${FILE_STATS}
+
+          Please review the code changes above to verify:
+          - Implementation matches issue requirements
+          - Code follows project conventions
+          - Edge cases are handled appropriately
+
+          ##  How to Test
+          1. Check out this branch locally
+          2. Run existing tests to ensure no regressions
+          3. Manually verify the new functionality works as expected
+
+          ##  Checklist
+          - [ ] Code review completed
+          - [ ] Tests pass
+          - [ ] Documentation updated (if needed)
+
           ---
-          *This PR was created automatically by the Copilot Coder workflow using GHE.com token.*" \
-              --base main \
-              --head ${{ env.BRANCH }})
-              
-            PR_NUMBER=$(echo $PR_URL | grep -oE '[0-9]+$')
-            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "Created PR: $PR_URL"
+           **Related Issue:** Closes #${ISSUE_NUMBER}
+           *This PR was automatically generated by GitHub Copilot Agent (GHE.com)*"
           fi
 
-      - name: Update issue with success status
-        if: steps.commit.outputs.has_changes == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Update
-          
-          I've analyzed this issue and created a pull request with the proposed changes.
-          
-          **Pull Request**: #${{ steps.create-pr.outputs.pr_number }}
-          
-          Please review the changes and provide feedback. If the changes don't fully address the issue, you can add more details and I'll try again.
-          
-          ---
-          *Automated by GitHub Copilot Coder (GHE.com)*"
-          
-          # Remove the ghe-copilot label after processing
-          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
+          # Save PR body to file to avoid injection
+          printf '%s' "${PR_BODY}" > /tmp/pr_body.txt
 
-      - name: Comment on issue if no changes needed
-        if: steps.commit.outputs.has_changes == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Analysis
-          
-          I've analyzed this issue but didn't find any code changes needed based on the current state of the repository.
-          
-          This could mean:
-          - The issue might already be resolved
-          - More specific details are needed in the issue description
-          - The requested changes might require manual implementation
-          
-          Please provide more details if you'd like me to try again.
-          
-          ---
-          *Automated by GitHub Copilot Coder (GHE.com)*"
-          
-          # Remove the ghe-copilot label
-          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
+          # Create PR and capture URL - use file for body
+          PR_URL=$(gh pr create \
+            --title " ${ISSUE_TITLE}" \
+            --body-file /tmp/pr_body.txt \
+            --base main \
+            --head "${BRANCH_NAME}" \
+            --assignee "${ISSUE_CREATOR}")
 
-      - name: Comment on issue if Copilot failed
-        if: steps.copilot-run.outputs.copilot_failed == 'true'
+          # Clean up
+          rm -f /tmp/pr_body.txt
+
+          echo "PR_URL=${PR_URL}" >> $GITHUB_ENV
+          echo " Pull Request created: ${PR_URL}"
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_CREATOR: ${{ github.event.issue.user.login }}
+          BRANCH_NAME: ${{ env.BRANCH_NAME }}
+
+      - name:  Add Completion Comment to Issue
         run: |
-          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Error
-          
-          I encountered an error while trying to process this issue:
-          
-          \`\`\`
-          ${{ steps.copilot-run.outputs.copilot_error }}
-          \`\`\`
-          
-          Please check the workflow logs for more details or try again later.
-          
+          echo " Adding completion comment to issue #${ISSUE_NUMBER}..."
+
+          COMMENT="##  Implementation Complete! (GHE.com)
+
+          The GitHub Copilot CLI has successfully implemented the changes for this issue using GHE.com authentication.
+
+          ###  Pull Request
+          A Pull Request has been created with the implementation:
+          ${PR_URL}
+
+          ###  Next Steps
+          1. Review the Pull Request
+          2. Test the implementation
+          3. Approve and merge if everything looks good
+
+          ###  Logs
+          Workflow logs and Copilot execution logs are available in the workflow run artifacts.
+
           ---
-          *Automated by GitHub Copilot Coder (GHE.com)*"
-          
-          # Remove the ghe-copilot label
-          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
+           *This comment was automatically generated by the GitHub Copilot Coder (GHE.com) workflow.*"
+
+          gh issue comment "${ISSUE_NUMBER}" --body "${COMMENT}"
+          echo " Comment added successfully"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ env.PR_URL }}
+
+      - name:  Update Issue Labels - Completed
+        run: |
+          gh issue edit ${{ env.ISSUE_NUMBER }} \
+            --add-label "ready-for-review" \
+            --remove-label "in-progress"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name:  Publish Logs
+        uses: actions/upload-artifact@v3
+        if: always()
+        continue-on-error: true
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
+        with:
+          name: copilot-logs-ghecom
+          path: logs/
+          retention-days: 30
