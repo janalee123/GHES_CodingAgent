@@ -18,11 +18,10 @@ defaults:
 jobs:
   copilot-coder:
     if: contains(github.event.issue.labels.*.name, 'ghe-copilot')
-    runs-on: 
+    runs-on:
       - self-hosted
       - Linux
       - X64
-      - standard
     permissions:
       contents: write
       issues: write
