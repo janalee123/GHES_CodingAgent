@@ -1,0 +1,241 @@
+# =============================================================================
+# GitHub Copilot Coder (GHE.com) - Master Workflow
+# =============================================================================
+# This workflow is designed to use the GHE_COPILOT_TOKEN secret with GHE.com
+# instance (Enterprise Cloud with data residency).
+# 
+# Trigger by adding 'ghe-copilot' label to an issue.
+# =============================================================================
+name: GitHub Copilot Coder (GHE.com) - Master
+
+on: 
+  workflow_call:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  copilot-coder:
+    if: contains(github.event.issue.labels.*.name, 'ghe-copilot')
+    runs-on: 
+      - self-hosted
+      - Linux
+      - X64
+      - standard
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+
+      - name: Set environment from issue
+        run: |
+          echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
+          echo "ISSUE_URL=${{ github.event.issue.html_url }}" >> $GITHUB_ENV
+          echo "ISSUE_TITLE=$(echo '${{ github.event.issue.title }}' | sed 's/"/\\"/g')" >> $GITHUB_ENV
+          
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure gh CLI
+        run: |
+          echo "${{ secrets.GH_TOKEN }}" | gh auth login --hostname github.janaleetest.com --with-token
+
+      - name: Check authentication
+        run: gh auth status --hostname github.janaleetest.com
+
+      - name: Create branch for copilot changes
+        run: |
+          BRANCH="copilot-issue-${{ env.ISSUE_NUMBER }}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          
+          if git show-ref --verify --quiet refs/remotes/origin/$BRANCH; then
+            echo "Branch $BRANCH already exists, checking out..."
+            git checkout $BRANCH
+            git pull origin $BRANCH
+          else
+            echo "Creating new branch $BRANCH..."
+            git checkout -b $BRANCH
+          fi
+
+      - name: Run Copilot CLI
+        id: copilot-run
+        continue-on-error: true
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GHE_COPILOT_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          set +e
+
+          # Exclude binary, image, font, and large asset files from context
+          EXCLUDE_PATTERN="**/*.{png,jpg,jpeg,gif,svg,ico,webp,mp4,mp3,wav,ogg,pdf,zip,tar,gz,rar,7z,exe,dll,so,dylib,bin,woff,woff2,ttf,eot,otf,lock}"
+
+          echo "Running Copilot CLI on issue #${{ env.ISSUE_NUMBER }}..."
+          echo "Issue Title: ${{ env.ISSUE_TITLE }}"
+          
+          OUTPUT=$(copilot -p "$(cat <<EOF
+          You are a helpful AI coding assistant. A GitHub issue has been assigned to you.
+          
+          **Issue #${{ env.ISSUE_NUMBER }}**: ${{ env.ISSUE_TITLE }}
+          
+          **Issue URL**: ${{ env.ISSUE_URL }}
+          
+          Please read the full issue body and any comments from the GitHub API, then implement the requested changes.
+          
+          Guidelines:
+          1. If the issue is a bug fix, identify and fix the root cause
+          2. If the issue is a feature request, implement it following existing code patterns
+          3. If the issue is a question, provide a helpful response
+          4. Write clean, well-documented code
+          5. Follow the existing code style and conventions
+          6. Update or add tests if applicable
+          7. Update documentation if needed
+          8. IMPORTANT: Focus only on what the issue specifically asks for
+          9. IMPORTANT: Do NOT make changes outside the scope of the issue
+          
+          After analyzing the issue, make the necessary code changes.
+          EOF
+          )" --add-dir . --ignore "$EXCLUDE_PATTERN" --allow-all-tools 2>&1)
+          
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "copilot_failed=true" >> $GITHUB_OUTPUT
+            echo "copilot_error<<ERREOF" >> $GITHUB_OUTPUT
+            echo "$OUTPUT" >> $GITHUB_OUTPUT
+            echo "ERREOF" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "copilot_failed=false" >> $GITHUB_OUTPUT
+
+      - name: Commit changes
+        id: commit
+        if: steps.copilot-run.outputs.copilot_failed != 'true'
+        run: |
+          git add -A
+          
+          if git diff --staged --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No changes to commit"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            git commit -m "feat: implement changes for issue #${{ env.ISSUE_NUMBER }}" \
+                      -m "Automated changes by GitHub Copilot (GHE.com)" \
+                      -m "Resolves: ${{ env.ISSUE_URL }}"
+          fi
+
+      - name: Push changes
+        if: steps.commit.outputs.has_changes == 'true'
+        run: |
+          git push origin ${{ env.BRANCH }} --force-with-lease
+
+      - name: Create or update pull request
+        id: create-pr
+        if: steps.commit.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --head "${{ env.BRANCH }}" --json number --jq '.[0].number')
+          
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #$EXISTING_PR already exists, updating..."
+            echo "pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+          else
+            echo "Creating pull request..."
+            PR_URL=$(gh pr create \
+              --title "Copilot (GHE.com): ${{ env.ISSUE_TITLE }}" \
+              --body "## Summary
+          
+          Automated changes generated by GitHub Copilot (GHE.com) to address issue #${{ env.ISSUE_NUMBER }}.
+          
+          ## Related Issue
+          
+          Closes #${{ env.ISSUE_NUMBER }}
+          
+          ## Changes
+          
+          Please review the changes made by Copilot and ensure they meet the requirements.
+          
+          ---
+          *This PR was created automatically by the Copilot Coder workflow using GHE.com token.*" \
+              --base main \
+              --head ${{ env.BRANCH }})
+              
+            PR_NUMBER=$(echo $PR_URL | grep -oE '[0-9]+$')
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "Created PR: $PR_URL"
+          fi
+
+      - name: Update issue with success status
+        if: steps.commit.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Update
+          
+          I've analyzed this issue and created a pull request with the proposed changes.
+          
+          **Pull Request**: #${{ steps.create-pr.outputs.pr_number }}
+          
+          Please review the changes and provide feedback. If the changes don't fully address the issue, you can add more details and I'll try again.
+          
+          ---
+          *Automated by GitHub Copilot Coder (GHE.com)*"
+          
+          # Remove the ghe-copilot label after processing
+          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
+
+      - name: Comment on issue if no changes needed
+        if: steps.commit.outputs.has_changes == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Analysis
+          
+          I've analyzed this issue but didn't find any code changes needed based on the current state of the repository.
+          
+          This could mean:
+          - The issue might already be resolved
+          - More specific details are needed in the issue description
+          - The requested changes might require manual implementation
+          
+          Please provide more details if you'd like me to try again.
+          
+          ---
+          *Automated by GitHub Copilot Coder (GHE.com)*"
+          
+          # Remove the ghe-copilot label
+          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
+
+      - name: Comment on issue if Copilot failed
+        if: steps.copilot-run.outputs.copilot_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          gh issue comment ${{ env.ISSUE_NUMBER }} --body "## 🤖 Copilot (GHE.com) Error
+          
+          I encountered an error while trying to process this issue:
+          
+          \`\`\`
+          ${{ steps.copilot-run.outputs.copilot_error }}
+          \`\`\`
+          
+          Please check the workflow logs for more details or try again later.
+          
+          ---
+          *Automated by GitHub Copilot Coder (GHE.com)*"
+          
+          # Remove the ghe-copilot label
+          gh issue edit ${{ env.ISSUE_NUMBER }} --remove-label "ghe-copilot" || true
