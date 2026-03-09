@@ -103,7 +103,7 @@ jobs:
           
           After analyzing the issue, make the necessary code changes.
           EOF
-          )" --add-dir . --ignore "$EXCLUDE_PATTERN" --allow-all-tools 2>&1)
+          )" --add-dir . --allow-all-tools 2>&1)
           
           EXIT_CODE=$?
           echo "$OUTPUT"
