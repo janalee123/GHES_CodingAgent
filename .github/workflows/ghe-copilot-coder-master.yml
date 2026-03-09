@@ -71,6 +71,7 @@ jobs:
         continue-on-error: true
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.GHE_COPILOT_TOKEN }}
+          GH_HOST: e2e-enterprise.ghe.com
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
         run: |
           set +e
