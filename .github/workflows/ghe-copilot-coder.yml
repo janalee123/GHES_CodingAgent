@@ -1,0 +1,14 @@
+# ============================================================================
+# GitHub Copilot Coder (GHE.com) - Caller Workflow
+# ============================================================================
+name: GitHub Copilot Coder (GHE.com)
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  copilot:
+    if: contains(github.event.issue.labels.*.name, 'ghe-copilot')
+    uses: copilot-org/GHES_CodingAgent/.github/workflows/ghe-copilot-coder-master.yml@main
+    secrets: inherit
