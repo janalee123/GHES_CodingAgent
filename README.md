@@ -1,6 +1,6 @@
 # 🤖 GitHub Copilot Coder for GHES
 
-> **Automated code generation powered by GitHub Copilot CLI on GitHub Enterprise Server**
+> **Automated code generation, PR review, and testing powered by GitHub Copilot CLI on GitHub Enterprise Server**
 
 [![GitHub Actions](https://img.shields.io/badge/GitHub-Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)](https://github.com/features/actions)
 [![GitHub Copilot](https://img.shields.io/badge/GitHub-Copilot-000000?style=for-the-badge&logo=github&logoColor=white)](https://github.com/features/copilot)
@@ -10,19 +10,20 @@
 
 ## 📋 Overview
 
-This repository implements an automated coding workflow using **GitHub Copilot CLI** integrated with **GitHub Enterprise Server (GHES)**. Simply create an issue, add a label, and watch as Copilot generates the code, creates a PR, and links everything together automatically.
+This repository implements automated coding, reviewing, and testing workflows using **GitHub Copilot CLI** integrated with **GitHub Enterprise Server (GHES)**. Simply create an issue or PR, add a label, and watch as Copilot generates code, reviews PRs, and responds to follow-up questions automatically.
 
 ### ✨ Key Features
 
 #### 🤖 Copilot Coder
-- 🏷️ **Label-driven workflow** - Trigger code generation by adding the `copilot` label
+- 🏷️ **Label-driven workflow** - Trigger code generation by adding the `copilot` label (or `ghe-copilot` for GHE.com auth)
 - 🤖 **AI-powered coding** - GitHub Copilot CLI generates code based on issue descriptions
 - 🌿 **Automatic branching** - Creates feature branches (`copilot/{issue-number}`)
 - 📬 **Auto PR creation** - Opens pull requests with generated code
 - 🔗 **Native linking** - Automatically links PRs to issues
-- 📊 **Progress tracking** - Updates issue labels to track workflow state
+- 📊 **Progress tracking** - Updates issue labels to track workflow state (`in-progress` → `ready-for-review`)
 - 📦 **Artifact logging** - Captures and stores execution logs
 - 🔄 **MCP integration** - Uses Context7 for documentation and best practices
+- 🌐 **Dual auth support** - GHES token (`copilot` label) or GHE.com token (`ghe-copilot` label)
 
 #### 🔍 Copilot PR Reviewer
 - 🏷️ **Label-triggered PR reviews** - Add `copilot` label to trigger review
@@ -32,16 +33,29 @@ This repository implements an automated coding workflow using **GitHub Copilot C
 - 📝 **Detailed feedback** - Posts actionable comments with examples
 - 📊 **Artifact logs** - Complete analysis available for reference
 
+#### 💬 Copilot Interactive Reviewer
+- 🏷️ **Label-triggered initial review** - Add `copilot` label for full PR review
+- 💬 **Conversational follow-ups** - Mention `@copilot` in PR comments to ask questions
+- 🧠 **Session memory** - Maintains conversation context across interactions
+- 🧹 **Auto cleanup** - Session files deleted when PRs close/merge + weekly cleanup
+
 ## 🚀 Quick Start
 
 ### 1️⃣ Setup (One Time)
 
 #### ⚠️ IMPORTANT: Self-Hosted Runner Prerequisites
 
-If using **self-hosted runners**, you MUST manually install GitHub CLI on the runner VM before running workflows:
+All workflows run on **self-hosted runners**. The following tools must be **pre-installed** on the runner VM:
+
+| Tool | Required | Notes |
+|------|----------|-------|
+| **GitHub CLI (`gh`)** | ✅ Yes | Must be manually installed |
+| **Node.js** | ✅ Yes | Pre-installed on runner |
+| **Copilot CLI (`copilot`)** | ✅ Yes | Pre-installed on runner |
+| **Python 3.x** | ✅ Yes | Pre-installed on runner |
 
 ```bash
-# SSH into your runner VM and run:
+# Install GitHub CLI on your runner VM:
 GH_VERSION="2.62.0"
 cd /tmp
 curl -L -o gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"
@@ -64,7 +78,8 @@ See [GHES Setup Guide - Self-Hosted Runners](docs/GHES-SETUP.md#self-hosted-runn
    | Secret | Required | Description |
    |--------|----------|-------------|
    | `GH_TOKEN` | ✅ Yes | **Classic PAT** from your GHES instance (⚠️ NOT github.com) |
-   | `COPILOT_TOKEN` | ✅ Yes | Token for GitHub Copilot API access |
+   | `COPILOT_TOKEN` | ✅ Yes | Token for GitHub Copilot API access (GHES) |
+   | `GHE_COPILOT_TOKEN` | ⚙️ For GHE.com | Token for Copilot API access via GHE.com (only if using `ghe-copilot` label) |
    | `CONTEXT7_API_KEY` | ❌ Optional | Context7 API key for documentation |
 
    **⚠️ CRITICAL: Use Classic PAT for GH_TOKEN**
@@ -98,7 +113,12 @@ Create a Python FastAPI application with a simple health check endpoint.
 
 ### 3️⃣ Trigger the Workflow
 
-Add the **`copilot`** label to the issue.
+Add the appropriate label to the issue:
+
+| Label | Workflow | Description |
+|-------|----------|-------------|
+| `copilot` | GitHub Copilot Coder | Uses GHES `COPILOT_TOKEN` |
+| `ghe-copilot` | GitHub Copilot Coder (GHE.com) | Uses `GHE_COPILOT_TOKEN` from GHE.com |
 
 ### 4️⃣ Watch the Magic ✨
 
@@ -117,8 +137,9 @@ The workflow will automatically:
 
 1. Review the Pull Request
 2. **Add `copilot` label to PR for AI review** (optional) ✨
-3. Test the implementation
-4. Approve and merge when ready
+3. **Mention `@copilot` in PR comments** for follow-up questions (Interactive Reviewer) 💬
+4. Test the implementation
+5. Approve and merge when ready
 
 ## 🚀 Deployment Guide
 
@@ -218,7 +239,8 @@ After merging the deployment PR, add secrets to the target repository:
 | Secret | Required | Description |
 |--------|----------|-------------|
 | `GH_TOKEN` | ✅ Yes | Classic PAT with `repo` and `workflow` scopes |
-| `COPILOT_TOKEN` | ✅ Yes | Token for Copilot API access |
+| `COPILOT_TOKEN` | ✅ Yes | Token for Copilot API access (GHES) |
+| `GHE_COPILOT_TOKEN` | ⚙️ For GHE.com | Token for Copilot API access via GHE.com |
 | `CONTEXT7_API_KEY` | ❌ Optional | Context7 API key for documentation |
 
 ### Step 5️⃣: Start Using Copilot!
@@ -273,7 +295,50 @@ Copilot identifies and comments on issues like:
 
 For detailed information, see [Copilot PR Reviewer Documentation](docs/COPILOT-REVIEWER.md).
 
+## 💬 Copilot Interactive Reviewer
+
+The **Interactive Reviewer** enables conversational code reviews on PRs:
+
+- 🏷️ **Initial review** - Add the `copilot` label to a PR for a comprehensive review
+- 💬 **Follow-up questions** - Mention `@copilot` in PR comments to ask questions about the code
+- 🧠 **Session persistence** - Conversation context is saved to `.copilot-sessions/pr-{number}.json` in the repo
+- 👀 **Reaction feedback** - Adds 👀 when processing and 🚀 when response is posted
+
+### Interactive Flow
+
+```
+Developer adds 'copilot' label to PR
+         ↓
+Initial Review Posted (as PR review comment)
+         ↓
+Developer mentions @copilot in a PR comment
+         ↓
+Copilot responds with context-aware answer
+         ↓
+💬 Continue conversation as many times as needed
+         ↓
+PR is closed/merged → Session auto-cleaned
+```
+
+### Session Cleanup
+
+Session files are automatically cleaned up by the **Cleanup Copilot Sessions** workflow:
+- **On PR close/merge** - Deletes the session file for that PR
+- **Weekly schedule** - Scans for and removes stale sessions from closed PRs
+
 ## 🎯 How It Works
+
+### Workflow Triggers
+
+| Workflow | Trigger | Label/Event |
+|----------|---------|-------------|
+| **Copilot Coder** | Issue labeled | `copilot` |
+| **Copilot Coder (GHE.com)** | Issue labeled | `ghe-copilot` |
+| **Copilot PR Reviewer** | PR labeled | `copilot` |
+| **Interactive Reviewer** | PR labeled / PR comment | `copilot` label or `@copilot` mention |
+| **Session Cleanup** | PR closed/merged + weekly schedule | Automatic |
+| **CI** | Push/PR to main | Automatic |
+| **CodeQL** | Code scanning | Automatic |
 
 ### Coder Workflow Trigger
 
@@ -284,7 +349,8 @@ on:
 ```
 
 The coder workflow triggers when:
-- The `copilot` label is added to an issue
+- The `copilot` label is added to an issue (GHES auth)
+- The `ghe-copilot` label is added to an issue (GHE.com auth)
 
 ### Reviewer Workflow Trigger
 
@@ -296,6 +362,20 @@ on:
 
 The reviewer workflow triggers when:
 - The `copilot` label is added to a pull request
+
+### Interactive Reviewer Trigger
+
+```yaml
+on:
+  pull_request:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+```
+
+The interactive reviewer triggers when:
+- The `copilot` label is added to a PR (initial review)
+- A PR comment mentions `@copilot` (follow-up conversation)
 
 ### Architecture
 
@@ -338,10 +418,16 @@ Update Labels (completed, ready-for-review)
 ```
 .github/
 ├── workflows/
-│   ├── copilot-coder-master.yml    # Master workflow (reusable) - full logic
-│   ├── copilot-coder.yml           # Caller workflow (example/reference)
-│   ├── copilot-reviewer-master.yml # Master workflow (reusable) - full logic
-│   └── copilot-reviewer.yml        # Caller workflow (example/reference)
+│   ├── copilot-coder.yml                       # Caller: Copilot Coder (copilot label)
+│   ├── copilot-coder-master.yml                # Master: full coder logic (reusable)
+│   ├── ghe-copilot-coder.yml                   # Caller: Copilot Coder GHE.com (ghe-copilot label)
+│   ├── ghe-copilot-coder-master.yml            # Master: full GHE.com coder logic (reusable)
+│   ├── copilot-reviewer.yml                    # Caller: PR Reviewer (copilot label on PR)
+│   ├── copilot-reviewer-master.yml             # Master: full reviewer logic (reusable)
+│   ├── copilot-reviewer-interactive.yml        # Caller: Interactive Reviewer (@copilot mentions)
+│   ├── copilot-reviewer-interactive-master.yml # Master: interactive reviewer logic (reusable)
+│   ├── copilot-session-cleanup.yml             # Auto-cleanup of session files
+│   └── blank.yml                               # Basic CI workflow
 
 scripts/                            # Scripts for deployment only (NOT deployed to targets)
 ├── deploy-to-repo.ps1              # Deploy to target repo (PowerShell)
@@ -352,8 +438,7 @@ docs/
 ├── GHES-SETUP.md                   # Detailed setup guide
 ├── DEPLOYMENT.md                   # Deployment guide
 ├── COPILOT-REVIEWER.md             # PR Reviewer documentation
-├── TROUBLESHOOTING.md              # Common issues and solutions
-└── ...                             # Other documentation
+└── TROUBLESHOOTING.md              # Common issues and solutions
 
 mcp-config.json                     # MCP servers configuration (fetched at runtime)
 ```
@@ -373,19 +458,38 @@ mcp-config.json                     # MCP servers configuration (fetched at runt
 
 | Type | File | Purpose |
 |------|------|---------|
-| **Master** | `*-master.yml` | Contains full implementation logic, called by other repos |
-| **Caller** | `*.yml` | Lightweight wrapper that invokes the master workflow |
+| **Master** | `copilot-coder-master.yml` | Full coder logic (GHES auth) |
+| **Caller** | `copilot-coder.yml` | Lightweight wrapper - `copilot` label |
+| **Master** | `ghe-copilot-coder-master.yml` | Full coder logic (GHE.com auth) |
+| **Caller** | `ghe-copilot-coder.yml` | Lightweight wrapper - `ghe-copilot` label |
+| **Master** | `copilot-reviewer-master.yml` | Full PR reviewer logic |
+| **Caller** | `copilot-reviewer.yml` | Lightweight wrapper - `copilot` label on PR |
+| **Master** | `copilot-reviewer-interactive-master.yml` | Interactive reviewer with sessions |
+| **Caller** | `copilot-reviewer-interactive.yml` | Wrapper - `copilot` label + `@copilot` comments |
+| **Standalone** | `copilot-session-cleanup.yml` | Auto-cleanup of session files |
+| **Standalone** | `blank.yml` | Basic CI (push/PR to main) |
 
 Target repositories only receive the **caller workflows**, which are ~30 lines each.
+
+### Required Labels
+
+| Label | Color | Purpose |
+|-------|-------|---------|
+| `copilot` | `#ededed` | Triggers Copilot Coder and PR Reviewer workflows |
+| `ghe-copilot` | `#5319E7` | Triggers Copilot Coder with GHE.com authentication |
+| `in-progress` | `#FBCA04` | Applied while a workflow is running |
+| `ready-for-review` | `#0E8A16` | Applied when PR is ready for human review |
+| `completed` | `#0E8A16` | Task completed |
+| `copilot-failed` | `#D93F0B` | Workflow encountered an error |
 
 ## 🛠️ Technologies Used
 
 - **GitHub Actions** - Workflow orchestration
-- **GitHub Copilot CLI** - AI-powered code generation
+- **GitHub Copilot CLI** - AI-powered code generation (pre-installed on runner)
 - **GitHub Issues** - Task management
 - **Bash Scripts** - Automation
-- **Node.js 22.x** - Runtime for Copilot CLI
-- **Python 3.x** - Tooling and MCP server runtime
+- **Node.js** - Runtime for Copilot CLI (pre-installed on runner)
+- **Python 3.x** - Tooling and MCP server runtime (pre-installed on runner)
 - **uv** - Python package manager for installing MCP servers
 - **MCP Servers** - Context providers:
   - **Context7** (npx) - Documentation and examples
@@ -396,13 +500,16 @@ Target repositories only receive the **caller workflows**, which are ~30 lines e
 
 ### Workflow Variables
 
-Edit `.github/workflows/copilot-coder.yml` to customize:
+The LLM model is configured as an environment variable in the master workflow files:
 
 ```yaml
 env:
-  MODEL: claude-haiku-4.5          # LLM model to use
-  COPILOT_VERSION: 0.0.352         # Copilot CLI version
+  MODEL: gpt-5                   # LLM model used by Copilot CLI
 ```
+
+To change the model, edit the `MODEL` variable in:
+- `copilot-coder-master.yml` (GHES coder)
+- `ghe-copilot-coder-master.yml` (GHE.com coder)
 
 ## 🌐 Network Requirements
 
@@ -438,7 +545,7 @@ HTTPS_PROXY: http://proxy.company.com:8080
 NO_PROXY: <your-ghes-host>
 ```
 
-For detailed network configuration and troubleshooting, see **[GHES Compatibility Guide](docs/GHES-COMPATIBILITY.md#-required-networkfirewall-paths)**.
+For detailed network configuration and troubleshooting, see **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**.
 
 ---
 
@@ -509,24 +616,24 @@ permissions:
 Detailed guides are available in the `docs/` directory:
 
 - **[GHES Setup Guide](docs/GHES-SETUP.md)** - Complete setup instructions
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Deploy workflows to new repositories
 - **[Copilot PR Reviewer Guide](docs/COPILOT-REVIEWER.md)** - Automated PR review
-- **[Migration Guide](docs/MIGRATION-GUIDE.md)** - Migrate from Azure DevOps
-- **[Reviewer Migration Guide](docs/REVIEWER-MIGRATION.md)** - ADO Reviewer adaptation details
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 
 ## 🆘 Troubleshooting
 
 ### Workflow Not Triggering
 
-- ✅ Verify label is exactly `copilot` (case-sensitive)
+- ✅ Verify label is exactly `copilot` or `ghe-copilot` (case-sensitive)
 - ✅ Check workflow file syntax
 - ✅ Ensure workflow is enabled in Actions tab
 
 ### Authentication Errors
 
 - ✅ Verify `GH_TOKEN` is set in organization or repository secrets
-- ✅ Check token scopes (`repo`, `copilot_requests`)
-- ✅ Ensure token is from GHES, not GitHub.com
+- ✅ Check token scopes (`repo`, `workflow`)
+- ✅ Ensure `GH_TOKEN` is from GHES, not GitHub.com
+- ✅ For GHE.com workflows, verify `GHE_COPILOT_TOKEN` is configured
 
 ### Copilot Errors
 
